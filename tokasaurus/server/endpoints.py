@@ -4,9 +4,11 @@ from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, Form, HTTPException, Path, Request, Response, UploadFile
+from openai.pagination import SyncPage
 from openai.types.batch import Batch
 from openai.types.file_deleted import FileDeleted
 from openai.types.file_object import FileObject
+from openai.types.model import Model
 
 from tokasaurus.common_types import (
     Engine,
@@ -209,6 +211,21 @@ async def retrieve_batch(
         raise HTTPException(status_code=404, detail=f"Batch not found: {batch_id}")
 
     return make_batch_status(batch)
+
+
+@app.get("/v1/models")
+async def list_models():
+    return SyncPage(
+        object="list",
+        data=[
+            Model(
+                id="default",
+                created=nowstamp(),
+                object="model",
+                owned_by="tokasaurus",
+            )
+        ],
+    )
 
 
 def start_server(
