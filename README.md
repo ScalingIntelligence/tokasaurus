@@ -156,3 +156,16 @@ The server and manager are each their own process, with the model worker corresp
 When data parallelism is used, each replica has its own manager process and set of model worker processes. However, all data parallel replicas share the same server process which handles load balancing.
 
 The entry point for starting up the server and kicking off all the processes is `tokasaurus/entry.py`.
+
+
+## Citation
+ 
+```
+@software{juravsky2025tokasaurus,
+  title  = {Tokasaurus: An LLM Inference Engine for High-Throughput Workloads},
+  author = {Jordan Juravsky and Ayush Chakravarthy and Ryan Ehrlich and Sabri Eyuboglu and Bradley Brown and Joseph Shetaye and Christopher Ré and Azalia Mirhoseini},
+  url    = {https://github.com/fla-org/flash-linear-attention},
+  month  = jun,
+  year   = {2025}
+}
+```
