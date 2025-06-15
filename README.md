@@ -148,7 +148,7 @@ uvicorn_log_level="info" # The logging level for the uvicorn web server handling
 
 Cartridges are trainable KV caches optimized for a given piece of text. For more information, check out the Cartridges [repo](https://github.com/HazyResearch/cartridges) and [paper](https://arxiv.org/abs/2506.06266).
 
-NOTE: In order to use cartridges, you MUST be on the `geoff/cartridges` branch of the tokasaurus repo.
+NOTE: In order to use cartridges, you MUST be on the `geoff/cartridges` branch of the tokasaurus repo and have Tokasaurus installed from source (*i.e.* with `pip install -e . `).
 
 ### Using Cartridges
 
