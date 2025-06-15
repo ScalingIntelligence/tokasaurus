@@ -41,10 +41,28 @@ from tokasaurus.server.types import (
     SamplingParams,
     SubmittedBatch,
     SubmittedRequest,
+    CartridgeCompletionsRequest,
+    CartridgeChatCompletionRequest,
     TokasaurusRequest,
     nowstamp,
 )
 from tokasaurus.utils import get_eos_token_ids
+
+
+CARTRIDGE_TEMPLATE = """\
+{%- for message in messages %}
+    {%- if  (message.role == 'assistant') %}
+        {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' }}{% generation %}{{- message['content'] | trim + '<|eot_id|>' }}{% endgeneration %}
+
+    {%- else %}
+        {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' }}
+        
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- '<|start_header_id|>assistant<|end_header_id|>\n\n' }}
+{%- endif %}
+"""
 
 
 async def listen_for_disconnect(request: Request) -> None:
@@ -189,6 +207,20 @@ async def handle_batch(state: ServerState, batch_id: str):
                     item.submitted_req.request,
                     item.submitted_req.request_output,
                 )
+            case CartridgeCompletionsRequest():
+                out = process_cartridge_completions_output(
+                    state,
+                    item.user_req,
+                    item.submitted_req.request,
+                    item.submitted_req.request_output,
+                )
+            case CartridgeChatCompletionRequest():
+                out = process_cartridge_chat_completions_output(
+                    state,
+                    item.user_req,
+                    item.submitted_req.request,
+                    item.submitted_req.request_output,
+                )
 
         line = {
             "id": "tokasaurus",
@@ -308,15 +340,15 @@ def make_chat_logprobs(
     return logprobs_obj
 
 
-def get_stop_strings(request: CompletionsRequest | ChatCompletionRequest) -> list[str]:
-    if isinstance(request.stop, list):
-        return request.stop
+def get_stop_strings(request: CompletionsRequest | ChatCompletionRequest | CartridgeCompletionsRequest | CartridgeChatCompletionRequest) -> list[str]:
+    if request.stop is None:
+        stop = []
+    elif isinstance(request.stop, str):
+        stop = [request.stop]
+    else:
+        stop = request.stop
 
-    if isinstance(request.stop, str):
-        return [request.stop]
-
-    assert request.stop is None
-    return []
+    return stop
 
 
 def truncate_outputs(
@@ -453,7 +485,7 @@ def validate_completions_request(request: CompletionsRequest):
         )
 
 
-def validate_args(request: ChatCompletionRequest | CompletionsRequest):
+def validate_args(request: ChatCompletionRequest | CompletionsRequest | CartridgeCompletionsRequest | CartridgeChatCompletionRequest):
     if request.stream:
         raise HTTPException(
             status_code=400,
@@ -501,10 +533,14 @@ def validate_args(request: ChatCompletionRequest | CompletionsRequest):
             validate_chat_completion_request(request)
         case CompletionsRequest():
             validate_completions_request(request)
+        case CartridgeCompletionsRequest():
+            validate_completions_request(request)  # reuse validation since fields are similar
+        case CartridgeChatCompletionRequest():
+            validate_chat_completion_request(request)
 
 
 def process_request(
-    state: ServerState, request: ChatCompletionRequest | CompletionsRequest
+    state: ServerState, request: ChatCompletionRequest | CompletionsRequest | CartridgeCompletionsRequest | CartridgeChatCompletionRequest
 ):
     validate_args(request)
 
@@ -533,6 +569,7 @@ def process_request(
                 continue_final_message=not ends_with_user,
             )
             input_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+            cartridges = None
         case CompletionsRequest():
             if isinstance(request.prompt, str):
                 input_ids = state.tokenizer(request.prompt)["input_ids"]
@@ -543,6 +580,34 @@ def process_request(
                     status_code=400,
                     detail="Invalid type for prompt",
                 )
+            cartridges = None
+        case CartridgeCompletionsRequest():
+            if isinstance(request.prompt, str):
+                input_ids = state.tokenizer(request.prompt)["input_ids"]
+            elif is_ids_list(request.prompt):
+                input_ids = request.prompt
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid type for prompt",
+                )
+            cartridges = request.cartridges
+        case CartridgeChatCompletionRequest():
+            messages = request.messages
+            ends_with_user = messages[-1]["role"] == "user"
+            prompt = state.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                # set to `ends_with_user` to get same behavior as capsules/generation.py... 
+                # this matches training eval behavior
+                add_generation_prompt=False,  
+                # set to `not ends_with_user` to get same behavior as capsules/generation.py... 
+                # this matches training eval behavior
+                continue_final_message=False, 
+                chat_template=CARTRIDGE_TEMPLATE
+            )
+            input_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+            cartridges = request.cartridges
 
     rid = str(uuid4())
     req = TokasaurusRequest(
@@ -553,6 +618,7 @@ def process_request(
         stop=get_stop_strings(request),
         n=n,
         ignore_eos=request.ignore_eos,
+        cartridges=cartridges,
     )
 
     validate_length(state, req)
@@ -577,6 +643,63 @@ def process_chat_completions_output(
     request: TokasaurusRequest,
     output: RequestOutput,
 ):
+    # Check for errors first
+    if output.error_message is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=output.error_message,
+        )
+    
+    completions = decode_completion(state, request, output)
+
+    choices = []
+    for i in range(request.n):
+        new_message = ChatCompletionMessage(
+            role="assistant",
+            content=completions[i],
+        )
+
+        if crequest.logprobs is None:
+            logprobs = None
+        else:
+            logprobs = make_chat_logprobs(
+                completion_ids=output.completion_ids[i],
+                logprobs=output.logprobs[i],
+                inverse_vocab=state.inverse_vocab,
+            )
+
+        choice = Choice(
+            index=i,
+            message=new_message,
+            logprobs=logprobs,
+            finish_reason=output.finish_reason[i],
+        )
+        choices.append(choice)
+
+    return ChatCompletion(
+        id=request.id,
+        model=crequest.model,
+        usage=make_usage_info(request, output),
+        choices=choices,
+        created=nowstamp(),
+        object="chat.completion",
+        system_fingerprint=make_completions_fingerprint(output),
+    )
+
+
+def process_cartridge_chat_completions_output(
+    state: ServerState,
+    crequest: CartridgeChatCompletionRequest,
+    request: TokasaurusRequest,
+    output: RequestOutput,
+):
+    # Check for errors first
+    if output.error_message is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=output.error_message,
+        )
+    
     completions = decode_completion(state, request, output)
 
     choices = []
@@ -620,6 +743,13 @@ def process_completions_output(
     request: TokasaurusRequest,
     output: RequestOutput,
 ):
+    # Check for errors first
+    if output.error_message is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=output.error_message,
+        )
+    
     completions = decode_completion(state, request, output)
 
     choices = []
@@ -697,7 +827,7 @@ def make_batch_status(batch: SubmittedBatch):
 
 
 async def generate_output(
-    state: ServerState, request: CompletionsRequest | ChatCompletionRequest
+    state: ServerState, request: CompletionsRequest | ChatCompletionRequest | CartridgeCompletionsRequest | CartridgeChatCompletionRequest
 ):
     req = process_request(state, request)
     submitted = submit_request(state, req)

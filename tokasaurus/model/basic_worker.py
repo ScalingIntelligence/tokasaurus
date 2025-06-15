@@ -13,7 +13,9 @@ from tokasaurus.model.llama import LlamaForCausalLM
 from tokasaurus.model.types import (
     BasicWorkerState,
     BatchState,
+    CartridgeManager,
     CommandFromManager,
+    LoadCartridge,
     ModelInput,
     ModelOutput,
     NoMoreInputs,
@@ -45,6 +47,9 @@ def basic_model_loop(
     tp_size = state.config.tp_size
     non_blocking = True
 
+    # Initialize cartridge manager
+    cartridge_manager = CartridgeManager(model, state.config.page_size, logger=state.logger)
+
     @dataclass
     class Work:
         model_input: ModelInput
@@ -55,15 +60,28 @@ def basic_model_loop(
         logprobs_cpu: Tensor | None = None
 
     def preprocess():
-        command: CommandFromManager = state.input_q.get()
+        while True:  # Loop until we get a command that requires model processing
+            command: CommandFromManager = state.input_q.get()
 
-        match command:
-            case ModelInput():
-                inp = command
-            case NoMoreInputs():
-                return None
-            case _:
-                raise ValueError(f"Unknown command: {type(command)}")
+            match command:
+                case LoadCartridge():
+                    # Load cartridge synchronously before continuing
+                    cartridge_manager.load_cartridge(
+                        cartridge_id=command.cartridge_id,
+                        block_indices=command.block_indices,
+                        cartridge_dir=command.cartridge_dir
+                    )
+                    state.logger.info(f"Loaded cartridge: {command.cartridge_id}")
+                    # Continue to next command without returning
+                    continue
+                    
+                case ModelInput():
+                    inp = command
+                    break  # Exit loop with ModelInput
+                case NoMoreInputs():
+                    return None  # This is expected to return None
+                case _:
+                    raise ValueError(f"Unknown command: {type(command)}")
 
         batch_indices = torch.tensor(
             inp.batch_indices,

@@ -17,6 +17,13 @@ class StreamOptions(BaseModel):
     include_usage: Optional[bool] = False
 
 
+class Cartridge(BaseModel):
+    """Model for specifying a cartridge to use in requests."""
+    id: str = Field(description="The cartridge ID to use")
+    source: Literal["wandb", "local", "huggingface"] = Field(default="wandb", description="The source to download from ('wandb', 'local', 'huggingface')")
+    force_redownload: bool = Field(default=False, description="Whether to force redownload even if cartridge exists locally")
+
+
 class CompletionsRequest(BaseModel):
     # Ordered by official OpenAI API documentation
     # https://platform.openai.com/docs/api-reference/completions/create
@@ -42,6 +49,40 @@ class CompletionsRequest(BaseModel):
 
     # extra fields to get sglang benchmarking script to work
     ignore_eos: bool = False
+
+    class Config:
+        extra = "forbid"
+
+
+class CartridgeCompletionsRequest(BaseModel):
+    # Similar to CompletionsRequest but with cartridge support
+    # Based on official OpenAI API documentation with Tokasaurus extensions
+    # https://platform.openai.com/docs/api-reference/completions/create
+    model: str
+    prompt: Union[list[int], list[list[int]], str, list[str]]
+    best_of: Optional[int] = None
+    echo: Optional[bool] = False
+    frequency_penalty: Optional[float] = 0.0
+    logit_bias: Optional[dict[str, float]] = None
+    logprobs: Optional[int] = None
+    max_tokens: Optional[int] = 16
+    n: int = 1
+    presence_penalty: Optional[float] = 0.0
+    seed: Optional[int] = None
+    stop: Optional[Union[str, list[str]]] = Field(default_factory=list)
+    stream: Optional[bool] = False
+    stream_options: Optional[StreamOptions] = None
+    suffix: Optional[str] = None
+    temperature: Optional[float] = 1.0
+    top_p: Optional[float] = 1.0
+    user: Optional[str] = None
+    metadata: Optional[dict] = None
+
+    # extra fields to get sglang benchmarking script to work
+    ignore_eos: bool = False
+
+    # Tokasaurus-specific fields
+    cartridges: Optional[list[Cartridge]] = None
 
     class Config:
         extra = "forbid"
@@ -89,6 +130,39 @@ class ChatCompletionRequest(BaseModel):
         extra = "forbid"
 
 
+class CartridgeChatCompletionRequest(BaseModel):
+    # Similar to ChatCompletionRequest but with cartridge support
+    # Based on official OpenAI API documentation with Tokasaurus extensions
+    # https://platform.openai.com/docs/api-reference/chat/create
+    messages: list[ChatCompletionMessageParam]
+    model: str
+    frequency_penalty: Optional[float] = 0.0
+    logit_bias: Optional[dict[str, float]] = None
+    logprobs: Optional[bool] = False
+    top_logprobs: Optional[int] = None
+    max_tokens: Optional[int] = None
+    n: Optional[int] = 1
+    presence_penalty: Optional[float] = 0.0
+    response_format: Optional[ResponseFormat] = None
+    seed: Optional[int] = None
+    stop: Optional[Union[str, list[str]]] = Field(default_factory=list)
+    stream: Optional[bool] = False
+    stream_options: Optional[StreamOptions] = None
+    temperature: Optional[float] = 0.7
+    top_p: Optional[float] = 1.0
+    user: Optional[str] = None
+    metadata: Optional[dict] = None
+
+    # extra fields to get sglang benchmarking script to work
+    ignore_eos: bool = False
+
+    # Tokasaurus-specific fields
+    cartridges: Optional[list[Cartridge]] = None
+
+    class Config:
+        extra = "forbid"
+
+
 class BatchCreationRequest(BaseModel):
     """Request model for creating a batch"""
 
@@ -111,6 +185,7 @@ class RequestOutput:
     logprobs: list[list[float]] = field(default_factory=list)
     finish_reason: list[str] = field(default_factory=list)
     num_cached_prompt_tokens: list[int] = field(default_factory=list)
+    error_message: Optional[str] = None
 
     def validate_lengths(self):
         assert (
@@ -136,6 +211,7 @@ class TokasaurusRequest:
     stop: list[str]
     n: int
     ignore_eos: bool
+    cartridges: Optional[list[Cartridge]] = None
     created_timestamp: float = field(default_factory=time.time)
 
 
@@ -151,7 +227,7 @@ class SubmittedRequest:
 class BatchFileLine(BaseModel):
     custom_id: str
     method: Literal["POST"]
-    url: Literal["/v1/completions", "/v1/chat/completions"]
+    url: Literal["/v1/completions", "/v1/chat/completions", "/v1/cartridge/completions", "/v1/cartridge/chat/completions"]
     body: dict
 
 
@@ -164,7 +240,7 @@ class FileEntry:
 @dataclass
 class SubmittedBatchItem:
     line: BatchFileLine
-    user_req: CompletionsRequest | ChatCompletionRequest
+    user_req: CompletionsRequest | ChatCompletionRequest | CartridgeCompletionsRequest | CartridgeChatCompletionRequest
     submitted_req: SubmittedRequest
 
 

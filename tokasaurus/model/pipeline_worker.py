@@ -10,6 +10,8 @@ from tokasaurus.common_types import ServerConfig, TimedBarrier
 from tokasaurus.model.llama import LlamaForCausalLM
 from tokasaurus.model.types import (
     BatchState,
+    CartridgeManager,
+    LoadCartridge,
     ModelInput,
     ModelOutput,
     NoMoreInputs,
@@ -107,6 +109,9 @@ def pipeline_worker_model_loop(
     tp_rank = state.tp_rank
     dp_rank = state.dp_rank
 
+    # Initialize cartridge manager
+    cartridge_manager = CartridgeManager(model, config.page_size, logger=state.logger)
+
     pp_group = state.device_mesh["pp"].get_group()
 
     if pp_rank > 0:
@@ -130,12 +135,28 @@ def pipeline_worker_model_loop(
         logprobs_cpu: Tensor | None = None
 
     def preprocess():
-        command = state.input_q.get()
-        match command:
-            case NoMoreInputs():
-                return None
-            case _:
-                inp: ModelInput = command
+        while True:  # Loop until we get a command that requires model processing
+            command = state.input_q.get()
+            match command:
+                case LoadCartridge():
+                    # Load cartridge synchronously before continuing
+                    cartridge_manager.load_cartridge(
+                        cartridge_id=command.cartridge_id,
+                        block_indices=command.block_indices,
+                        cartridge_dir=command.cartridge_dir
+                    )
+                    state.logger.info(f"Loaded cartridge: {command.cartridge_id}")
+                    # Continue to next command without returning
+                    continue
+                    
+                case NoMoreInputs():
+                    return None  # This is expected to return None
+                case _:
+                    # ModelInput case - break out of loop to process
+                    break
+
+        # Continue with ModelInput processing
+        inp = command
 
         input_batch_state = make_input_batch_state(
             inp,

@@ -21,6 +21,8 @@ from tokasaurus.server.types import (
     FileEntry,
     SubmittedBatch,
     SubmittedBatchItem,
+    CartridgeCompletionsRequest,
+    CartridgeChatCompletionRequest,
     nowstamp,
 )
 from tokasaurus.server.utils import (
@@ -30,6 +32,7 @@ from tokasaurus.server.utils import (
     make_batch_status,
     process_chat_completions_output,
     process_completions_output,
+    process_cartridge_chat_completions_output,
     process_request,
     receive_from_manager_loop,
     submit_request,
@@ -71,6 +74,22 @@ async def oai_chat_completions(request: ChatCompletionRequest, raw_request: Requ
     state: ServerState = app.state.state_bundle
     req, out = await generate_output(state, request)
     return process_chat_completions_output(state, request, req, out)
+
+
+@app.post("/v1/cartridge/completions")
+@with_cancellation
+async def cartridge_completions(request: CartridgeCompletionsRequest, raw_request: Request):
+    state: ServerState = app.state.state_bundle
+    req, out = await generate_output(state, request)
+    return process_completions_output(state, request, req, out)
+
+
+@app.post("/v1/cartridge/chat/completions")
+@with_cancellation
+async def cartridge_chat_completions(request: CartridgeChatCompletionRequest, raw_request: Request):
+    state: ServerState = app.state.state_bundle
+    req, out = await generate_output(state, request)
+    return process_cartridge_chat_completions_output(state, request, req, out)
 
 
 @app.post("/v1/files", response_model=FileObject)
@@ -156,6 +175,10 @@ async def create_batch(request: BatchCreationRequest):
             request_type = CompletionsRequest
         case "/v1/chat/completions":
             request_type = ChatCompletionRequest
+        case "/v1/cartridge/completions":
+            request_type = CartridgeCompletionsRequest
+        case "/v1/cartridge/chat/completions":
+            request_type = CartridgeChatCompletionRequest
         case _:
             raise HTTPException(
                 status_code=400, detail=f"Unsupported endpoint: {request.endpoint}"

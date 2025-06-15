@@ -302,7 +302,11 @@ def run_overlapped_loop(
             # avoid these whenever possible
             run_work = preprocess()
 
-        assert run_work is not None
+        # Handle case where preprocess returns None (NoMoreInputs)
+        # Continue waiting for new inputs instead of exiting
+        if run_work is None:
+            continue
+            
         run_model(run_work)
 
         if postproc_work is not None:
@@ -755,6 +759,7 @@ class ModelRunner:
             num_prefill_tokens > 0
             or num_decode_tokens > self.config.cudagraph_max_size
             or not self.recorded_graphs
+            or num_decode_tokens == 0  # Handle empty batches
         ):
             return None
 

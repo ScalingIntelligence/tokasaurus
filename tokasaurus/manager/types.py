@@ -1,7 +1,10 @@
 import math
 from dataclasses import dataclass, field
+from typing import Optional
+from pathlib import Path
 
 import torch.multiprocessing as mp
+import yaml
 from loguru import logger
 from tokenizers import Tokenizer
 from transformers import AutoTokenizer, GenerationConfig
@@ -11,6 +14,41 @@ from tokasaurus.manager.allocator import BatchIndexAllocator, BlockAllocator
 from tokasaurus.manager.monitoring import StatsTracker
 from tokasaurus.manager.stopping_predictor import EarlyStoppingTracker
 from tokasaurus.server.types import RequestOutput, SamplingParams, TokasaurusRequest
+from tokasaurus.utils import sanitize_cartridge_id
+
+
+@dataclass
+class CartridgeConfig:
+    """Configuration for a cartridge containing KV cache data, parsed from wandb config.yaml."""
+    cartridge_id: str
+    num_tokens: int
+    max_tokens_config: int  # Original max_tokens from kv_cache_initializer
+    pretrained_model_name: str
+    
+    @classmethod
+    def from_config_yaml(cls, cartridge_id: str, config_path: Path) -> "CartridgeConfig":
+        """Create CartridgeConfig from wandb config.yaml file."""
+        with open(config_path, "r") as f:
+            config_data = yaml.safe_load(f)
+        
+        # Extract max_tokens from kv_cache_initializer section
+        kv_cache_init = config_data.get("kv_cache_initializer", {})
+        max_tokens = kv_cache_init.get("max_tokens", 2048)
+        
+        # Extract model information
+        model_config = config_data.get("model", {})
+        pretrained_model_name = model_config.get("pretrained_model_name_or_path", "meta-llama/Llama-3.2-3B-Instruct")
+        
+        return cls(
+            cartridge_id=cartridge_id,
+            num_tokens=max_tokens,
+            max_tokens_config=max_tokens,
+            pretrained_model_name=pretrained_model_name
+        )
+    
+    def num_blocks_needed(self, page_size: int) -> int:
+        """Calculate the number of blocks needed for this cartridge."""
+        return math.ceil(self.num_tokens / page_size)
 
 
 @dataclass
@@ -18,6 +56,7 @@ class Sequence:
     id: str
     completion_total: int
     input_ids: list[int]
+    prepended_cartridge_ids: Optional[tuple[str, ...]] = None
 
     sampling_params: SamplingParams = field(
         default_factory=lambda: SamplingParams(temperature=0.0, top_p=1.0)
@@ -32,7 +71,10 @@ class Sequence:
     completion_scheduled: int = 0
 
     batch_index: int | None = None
-    kv_indices: list[int] | None = None
+    
+    # Split block indices: cartridge blocks vs token-specific blocks
+    cartridge_indices: list[int] | None = None
+    kv_indices: list[int] | None = None  # Now token-only blocks
 
     # the tokens/logprobs that have actually come back from the model
     # note that these lists will lag completion_scheduled because we
@@ -41,7 +83,7 @@ class Sequence:
     logprobs: list[float] = field(default_factory=list)
 
     num_cached_prompt_tokens: int | None = None
-
+    
     cancelled: bool = False
 
     _expected_completion_length: int | None = None
@@ -83,14 +125,19 @@ class Sequence:
     def expected_total_length(self, add_buffer: bool = False):
         return self.prompt_total() + self.expected_completion_length(add_buffer)
 
+    def get_num_cartridge_blocks(self) -> int:
+        """Get the number of cartridge blocks for this sequence."""
+        return len(self.cartridge_indices) if self.cartridge_indices else 0
+
     def expected_num_additional_blocks(self, page_size: int, add_buffer: bool = False):
+        # NOTE: This now only considers token blocks, not cartridge blocks
         # -1 since the last generated token isn't sent through the model, so we
         # don't need to reserve space for it
         kv_tokens_needed = (
             self.prompt_total() + self.expected_completion_length(add_buffer) - 1
         )
 
-        if self.kv_indices is not None:
+        if self.kv_indices is not None:  # Only token blocks
             kv_tokens_needed -= page_size * len(self.kv_indices)
 
         return math.ceil(kv_tokens_needed / page_size)
@@ -107,34 +154,25 @@ class Sequence:
         return last_page_len
 
     def max_num_additional_blocks(self, page_size: int):
+        # NOTE: This now only considers token blocks, not cartridge blocks
         kv_tokens_needed = self.prompt_total() + self.completion_total - 1
-        if self.kv_indices is not None:
+        if self.kv_indices is not None:  # Only token blocks
             kv_tokens_needed -= page_size * len(self.kv_indices)
 
-        return math.ceil(kv_tokens_needed / page_size)
+        return math.ceil(max(0, kv_tokens_needed) / page_size)
 
     def most_recent_completion_ids(self, num_to_return: int):
         recently_decoded = self.completion_ids[-num_to_return:]
         return recently_decoded
 
-    def num_uncached_prompt_tokens(self):
-        assert self.num_cached_prompt_tokens is not None
-        return self.prompt_total() - self.num_cached_prompt_tokens
-
-    def num_cached_blocks(self, page_size: int):
-        assert self.num_cached_prompt_tokens is not None
-        assert self.num_cached_prompt_tokens % page_size == 0
-        return self.num_cached_prompt_tokens // page_size
-
-    def cached_blocks(self, page_size: int):
-        assert self.kv_indices is not None
-        num_cached_blocks = self.num_cached_blocks(page_size)
-        return self.kv_indices[:num_cached_blocks]
-
-    def uncached_blocks(self, page_size: int):
-        assert self.kv_indices is not None
-        num_cached_blocks = self.num_cached_blocks(page_size)
-        return self.kv_indices[num_cached_blocks:]
+    def total_block_indices(self) -> list[int]:
+        """Get all block indices (cartridge + token) for model input."""
+        result = []
+        if self.cartridge_indices:
+            result.extend(self.cartridge_indices)
+        if self.kv_indices:
+            result.extend(self.kv_indices)
+        return result
 
 
 @dataclass
@@ -287,6 +325,13 @@ class ManagerState:
     q_server_to_manager: mp.Queue
     q_manager_to_server: mp.Queue
     process_name: str
+    
+    # New fields for async cartridge downloading
+    q_download_requests: mp.Queue
+    q_download_complete: mp.Queue
+    cartridges_downloading: set[str] = field(default_factory=set)  # cartridge_ids being downloaded
+    sequences_waiting_for_cartridges: dict[str, set[str]] = field(default_factory=dict)  # cartridge_id -> seq_ids
+    
     scheduling_queue: SchedulingQueue = field(default_factory=SchedulingQueue)
     inflight_schedule_decisions: dict[str, ScheduleDecision] = field(
         default_factory=dict
@@ -300,6 +345,11 @@ class ManagerState:
     req_ids_to_cancel: set[str] = field(default_factory=set)
     sent_no_more_inputs: bool = False
     last_step_num_prefill: int = 1024 * 1024 * 1024
+    
+    # Cartridge management
+    cartridge_id_to_config: dict[str, CartridgeConfig] = field(default_factory=dict)
+    cartridge_loading_state: dict[str, bool] = field(default_factory=dict)
+    cartridge_info_storage: dict[str, dict] = field(default_factory=dict)
 
     def __post_init__(self):
         self.tokenizer = AutoTokenizer.from_pretrained(self.config.tokenizer)
@@ -311,8 +361,47 @@ class ManagerState:
     def get_tokenizer(self) -> Tokenizer:
         return self.tokenizer._tokenizer  # type: ignore
 
+    def store_cartridge_info(self, cartridge_info_list: list[dict]):
+        """Store cartridge info for later use during downloading."""
+        for cartridge_info in cartridge_info_list:
+            cartridge_id = cartridge_info["id"]
+            self.cartridge_info_storage[cartridge_id] = cartridge_info
+
+    def get_cartridge_info(self, cartridge_id: str) -> dict | None:
+        """Get stored cartridge info for downloading."""
+        return self.cartridge_info_storage.get(cartridge_id)
+
+    def load_cartridge_config(self, cartridge_id: str) -> CartridgeConfig:
+        """
+        Load cartridge configuration from config.yaml file in cartridge directory.
+        """
+        if cartridge_id in self.cartridge_id_to_config:
+            return self.cartridge_id_to_config[cartridge_id]
+        
+        # Load actual config from cartridge directory (use sanitized ID for directory path)
+        sanitized_id = sanitize_cartridge_id(cartridge_id)
+        cartridge_path = Path(self.config.cartridge_dir) / sanitized_id
+        config_file = cartridge_path / "config.yaml"
+        
+        if not config_file.exists():
+            raise FileNotFoundError(f"Cartridge config not found: {config_file}")
+        
+        try:
+            # Use the new from_config_yaml class method
+            config = CartridgeConfig.from_config_yaml(cartridge_id, config_file)
+            
+            # Cache the config
+            self.cartridge_id_to_config[cartridge_id] = config
+            self.logger.info(f"Loaded cartridge config: {cartridge_id} with {config.num_tokens} tokens from {config_file}")
+            return config
+            
+        except yaml.YAMLError as e:
+            raise ValueError(f"Invalid YAML in cartridge config {config_file}: {e}")
+        except Exception as e:
+            raise ValueError(f"Error loading cartridge config {config_file}: {e}")
+
     def deallocate(self, seq: Sequence):
-        assert seq.kv_indices is not None
+        assert seq.kv_indices is not None or seq.cartridge_indices is not None
 
         # NOTE: the last decoded token is NOT sent back through the model, so we don't
         # generate a KV cache for it (and thus can't prefix cache with it).
@@ -320,12 +409,32 @@ class ManagerState:
         if seq.prompt_scheduled < seq.prompt_total():
             ids_for_update = ids_for_update[: seq.prompt_scheduled]
 
-        self.block_allocator.free_and_update(seq.id, seq.kv_indices, ids_for_update)
+        cartridge_indices = seq.cartridge_indices or []
+        token_indices = seq.kv_indices or []
+        
+        self.block_allocator.free_and_update(
+            seq.id, cartridge_indices, token_indices, ids_for_update, 
+            prepended_cartridge_ids=seq.prepended_cartridge_ids
+        )
+        seq.cartridge_indices = None
         seq.kv_indices = None
 
         assert seq.batch_index is not None
         self.batch_index_allocator.free(seq.batch_index)
         seq.batch_index = None
+
+    def is_cartridge_loaded(self, cartridge_id: str) -> bool:
+        """Check if a cartridge is loaded."""
+        return self.cartridge_loading_state.get(cartridge_id, False)
+    
+    def mark_cartridge_loading(self, cartridge_id: str):
+        """Mark a cartridge as loading/loaded."""
+        self.cartridge_loading_state[cartridge_id] = True
+
+    def reset_cartridge_loading_state(self, cartridge_id: str):
+        """Reset cartridge loading state to force reload after force redownload."""
+        self.cartridge_loading_state[cartridge_id] = False
+        self.logger.info(f"Reset loading state for cartridge {cartridge_id} - will be reloaded on next use")
 
 
 @dataclass

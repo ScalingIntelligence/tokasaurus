@@ -1,3 +1,4 @@
+import logging
 import math
 from collections import deque
 from dataclasses import dataclass, field, fields, is_dataclass, replace
@@ -15,6 +16,7 @@ from torch import Tensor
 from torch.distributed.device_mesh import DeviceMesh
 
 from tokasaurus.common_types import ServerConfig, TimedBarrier
+from tokasaurus.utils import sanitize_cartridge_id
 
 KV_Cache = tuple[Tensor, Tensor]
 DeviceType = torch.device | str
@@ -139,11 +141,11 @@ class PageInformationBuilder:
 
         end_block = math.ceil(kv_seq_len / page_size)
 
-        sliced_kv_indices = kv_indices[starting_block:end_block]
-        assert len(sliced_kv_indices) > 0
+        blocks_for_this_seq = kv_indices[:end_block]
+        assert len(blocks_for_this_seq) > 0
 
-        self.kv_indices.extend(sliced_kv_indices)
-        self.kv_indptr.append(self.kv_indptr[-1] + len(sliced_kv_indices))
+        self.kv_indices.extend(blocks_for_this_seq)
+        self.kv_indptr.append(self.kv_indptr[-1] + len(blocks_for_this_seq))
 
         last_page_len = kv_seq_len % page_size
         if last_page_len == 0:
@@ -396,7 +398,158 @@ class NoMoreInputs:
     pass
 
 
-CommandFromManager = ModelInput | NoMoreInputs
+@dataclass
+class LoadCartridge:
+    cartridge_id: str
+    block_indices: list[int]
+    cartridge_dir: str
+
+
+class CartridgeManager:
+    def __init__(self, model, page_size: int, logger: logging.Logger | None = None):
+        self.model = model
+        self.page_size = page_size
+        self.loaded_cartridges: set[str] = set()
+        self.logger = logger.bind(process_name="CartridgeManager")
+    
+    def load_cartridge(self, cartridge_id: str, block_indices: list[int], cartridge_dir: str):
+        """Load cartridge data from disk into KV cache blocks."""
+        if cartridge_id in self.loaded_cartridges:
+            return  # Already loaded
+        
+        # Load from disk (use sanitized ID for directory path)
+        sanitized_id = sanitize_cartridge_id(cartridge_id)
+        cartridge_path = f"{cartridge_dir}/{sanitized_id}/cartridge.pt"
+        try:
+            state_dict = torch.load(cartridge_path, map_location=self.model.device, weights_only=False)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Cartridge file not found: {cartridge_path}")
+        
+        # Validate state dict structure
+        required_keys = ["trainable_keys", "trainable_values", "fixed_keys", "fixed_values"]
+        missing_keys = [key for key in required_keys if key not in state_dict]
+        if missing_keys:
+            raise ValueError(f"Invalid cartridge format: missing {missing_keys} in {cartridge_path}")
+        
+        trainable_keys = state_dict["trainable_keys"]
+        trainable_values = state_dict["trainable_values"]
+        fixed_keys = state_dict["fixed_keys"]
+        fixed_values = state_dict["fixed_values"]
+        
+        # Validate ParameterList structure
+        param_lists = [trainable_keys, trainable_values, fixed_keys, fixed_values]
+        param_names = ["trainable_keys", "trainable_values", "fixed_keys", "fixed_values"]
+        
+        # Check all ParameterLists have same length
+        list_lengths = [len(param_list) for param_list in param_lists]
+        if not all(length == list_lengths[0] for length in list_lengths):
+            raise ValueError(f"Mismatched ParameterList lengths in {cartridge_path}: {dict(zip(param_names, list_lengths))}")
+        
+        if len(trainable_keys) == 0:
+            raise ValueError(f"Empty ParameterList in cartridge {cartridge_path}")
+        
+        # Check the first parameters to get dimensions
+        first_trainable_key = trainable_keys[0]
+        first_fixed_key = fixed_keys[0]
+        
+        if len(first_trainable_key.shape) != 4 or len(first_fixed_key.shape) != 4:
+            raise ValueError(f"Expected 4D tensors for cartridge parameters, got trainable: {first_trainable_key.shape}, fixed: {first_fixed_key.shape}")
+        
+        # Validate shapes are compatible for concatenation
+        trainable_shape = first_trainable_key.shape  # [batch, num_kv_heads, num_trainable_tokens, head_dim]
+        fixed_shape = first_fixed_key.shape  # [batch, num_kv_heads, num_fixed_tokens, head_dim]
+        
+        if (trainable_shape[0] != fixed_shape[0] or 
+            trainable_shape[1] != fixed_shape[1] or 
+            trainable_shape[3] != fixed_shape[3]):
+            raise ValueError(f"Incompatible shapes for concatenation: trainable {trainable_shape} vs fixed {fixed_shape}")
+        
+        batch_size, num_kv_heads, num_trainable_tokens, head_dim = trainable_shape
+        _, _, num_fixed_tokens, _ = fixed_shape
+        
+        if batch_size != 1:
+            raise ValueError(f"Expected batch size 1, got {batch_size}")
+        
+        # Calculate total tokens after concatenation
+        total_tokens = num_trainable_tokens + num_fixed_tokens
+        
+        # Assert total tokens is divisible by page_size
+        if total_tokens % self.page_size != 0:
+            raise ValueError(
+                f"Total cartridge tokens ({total_tokens} = {num_trainable_tokens} trainable + {num_fixed_tokens} fixed) "
+                f"must be divisible by page_size ({self.page_size}). "
+                f"Current remainder: {total_tokens % self.page_size}"
+            )
+        
+        expected_blocks = total_tokens // self.page_size
+        if len(block_indices) != expected_blocks:
+            raise ValueError(f"Block indices length ({len(block_indices)}) doesn't match expected blocks ({expected_blocks})")
+        
+        # Concatenate trainable and fixed parameters along token dimension (dim=2)
+        concatenated_keys = []
+        concatenated_values = []
+        
+        for layer_idx in range(len(trainable_keys)):
+            # Concatenate keys: [1, num_kv_heads, num_fixed_tokens, head_dim] + [1, num_kv_heads, num_trainable_tokens, head_dim]
+            layer_keys = torch.cat([fixed_keys[layer_idx], trainable_keys[layer_idx]], dim=2)
+            layer_values = torch.cat([fixed_values[layer_idx], trainable_values[layer_idx]], dim=2)
+            concatenated_keys.append(layer_keys)
+            concatenated_values.append(layer_values)
+        
+        # Write to KV cache
+        self._write_to_kv_cache(concatenated_keys, concatenated_values, block_indices, total_tokens)
+        self.loaded_cartridges.add(cartridge_id)
+    
+    def _write_to_kv_cache(self, concatenated_keys: list, concatenated_values: list, block_indices: list[int], num_tokens: int):
+        """Write cartridge data to KV cache blocks."""
+        # Iterate through model layers and corresponding parameters
+        for layer_idx, layer in enumerate(self.model.model.layers):
+            if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'layer_cache'):
+                layer_cache = layer.self_attn.layer_cache
+                if layer_cache is not None and layer_idx < len(concatenated_keys):
+                    # Get the concatenated parameter for this layer
+                    layer_keys = concatenated_keys[layer_idx]  # Shape: [1, num_kv_heads, total_tokens, head_dim]
+                    layer_values = concatenated_values[layer_idx]
+
+                    self._write_layer_cache(layer_cache, layer_keys, layer_values, block_indices, num_tokens)
+
+    def _write_layer_cache(self, layer_cache, layer_keys: Tensor, layer_values: Tensor, block_indices: list[int], num_tokens: int):
+        """Write keys and values to a specific layer's cache."""
+        # Get cache tensors
+        k_cache = layer_cache.k_cache  # [num_pages, page_size, num_kv_heads, head_dim]
+        v_cache = layer_cache.v_cache  # [num_pages, page_size, num_kv_heads, head_dim]
+        
+        # layer_keys/layer_values: [1, num_kv_heads, num_tokens, head_dim]
+        # Remove batch dimension and reorder to match cache format
+        keys_no_batch = layer_keys.squeeze(0)  # [num_kv_heads, num_tokens, head_dim]
+        values_no_batch = layer_values.squeeze(0)  # [num_kv_heads, num_tokens, head_dim]
+        
+        # Transpose to [num_tokens, num_kv_heads, head_dim] to match cache expectations
+        keys_transposed = keys_no_batch.transpose(0, 1)  # [num_tokens, num_kv_heads, head_dim]
+        values_transposed = values_no_batch.transpose(0, 1)  # [num_tokens, num_kv_heads, head_dim]
+        
+        # Verify dimensions match cache
+        cache_num_kv_heads = k_cache.shape[2]
+        cache_head_dim = k_cache.shape[3]
+        
+        if keys_transposed.shape[1] != cache_num_kv_heads:
+            raise ValueError(f"KV heads mismatch: cartridge {keys_transposed.shape[1]} vs cache {cache_num_kv_heads}")
+        if keys_transposed.shape[2] != cache_head_dim:
+            raise ValueError(f"Head dim mismatch: cartridge {keys_transposed.shape[2]} vs cache {cache_head_dim}")
+        
+        # Write to cache blocks
+        for i, block_idx in enumerate(block_indices):
+            start_token = i * self.page_size
+            end_token = min(start_token + self.page_size, num_tokens)
+            tokens_in_block = end_token - start_token
+            
+            # Copy data to the cache
+            k_cache[block_idx, :tokens_in_block] = keys_transposed[start_token:end_token]
+            v_cache[block_idx, :tokens_in_block] = values_transposed[start_token:end_token]
+
+
+# Updated union type to include LoadCartridge
+CommandFromManager = ModelInput | NoMoreInputs | LoadCartridge
 
 
 @dataclass

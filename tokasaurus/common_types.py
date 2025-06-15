@@ -121,6 +121,9 @@ class ServerConfig(pydra.Config):
     allocator_sanity_checks: bool = False
     bump_city_population_me: bool = False
 
+    # Cartridge configuration
+    cartridge_dir: str = "./cartridges"
+
     def uvsh(self):
         self.uvicorn_log_level = "warning"
 

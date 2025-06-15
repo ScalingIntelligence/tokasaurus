@@ -144,6 +144,161 @@ stats_report_seconds=5.0 # How often server stats are printed to the console.
 uvicorn_log_level="info" # The logging level for the uvicorn web server handling requests. Set this value to "warning" to disable logs being printed every time a request is finished (which can sometimes be annoying/verbose).
 ```
 
+## Cartridges
+
+Cartridges are trainable KV caches optimized for a given piece of text. For more information, check out the Cartridges [repo](https://github.com/HazyResearch/cartridges) and [paper](https://arxiv.org/abs/2506.06266).
+
+NOTE: In order to use cartridges, you MUST be on the `geoff/cartridges` branch of the tokasaurus repo.
+
+### Using Cartridges
+
+Tokasaurus supports cartridges through dedicated API endpoints that extend the standard OpenAI-compatible API. You can use cartridges with both completion and chat completion requests.
+
+#### Quickstart
+
+NOTE: this quick start was only tested on an A100 80GB GPU.
+
+Initialize the tokasaurus server as normal. Here we use a 3B model in order to load the example cartridge.
+
+```bash
+tksrs model=meta-llama/Llama-3.2-3B-Instruct kv_cache_num_tokens='(512 * 1024)'
+```
+
+Then, make a request to the server with the cartridge:
+
+```python
+import requests
+
+# Make a request with a cartridge from HuggingFace
+response = requests.post("http://localhost:10210/v1/cartridge/chat/completions", json={
+    "model": "default",
+    "messages": [{"role": "user", "content": "Help me understand this."}],
+    "max_tokens": 50,
+    "cartridges": [{
+        "id": "hazyresearch/cartridge-wauoq23f",
+        "source": "huggingface",
+        "force_redownload": False
+    }]
+})
+
+print(response.json())
+```
+
+Alternatively, you can test the cartridge functionality using the provided example script:
+
+```bash
+python scripts/cartridges/example.py
+```
+
+#### API Endpoints
+
+- `/v1/cartridge/completions` - Completions with cartridge support
+- `/v1/cartridge/chat/completions` - Chat completions with cartridge support
+
+#### Request Types
+
+Tokasaurus provides cartridge-enabled versions of the standard request types:
+
+- `CartridgeCompletionsRequest` - Extends the standard completions request with cartridge support
+- `CartridgeChatCompletionRequest` - Extends the standard chat completions request with cartridge support
+
+Both request types include a `cartridges` field that accepts a list of `Cartridge` objects.
+
+#### Cartridge Specification
+
+Each cartridge is specified using the `Cartridge` model with the following fields:
+
+- `id` (string, required): The cartridge identifier
+- `source` (string, optional): The source to download from - `"wandb"` (default), `"local"`, or `"huggingface"`
+- `force_redownload` (boolean, optional): Whether to force redownload even if the cartridge exists locally (default: `false`)
+
+#### Usage Examples
+
+Here are some examples of how to use cartridges with the API:
+
+**Basic Usage with Python requests:**
+
+```python
+import requests
+
+# Basic request with a wandb cartridge
+response = requests.post("http://localhost:10210/v1/cartridge/chat/completions", json={
+    "model": "default",
+    "messages": [{"role": "user", "content": "Hello, how are you?"}],
+    "max_tokens": 50,
+    "cartridges": [{
+        "id": "wauoq23f",
+        "source": "wandb"
+    }]
+})
+```
+
+**Loading from Different Sources:**
+
+```python
+# Load from wandb (default source)
+cartridges = [{
+    "id": "wauoq23f",
+    "source": "wandb",
+    "force_redownload": False
+}]
+
+# Load from HuggingFace
+cartridges = [{
+    "id": "hazyresearch/cartridge-wauoq23f", 
+    "source": "huggingface"
+}]
+
+# Load from local storage
+cartridges = [{
+    "id": "my_local_cartridge",
+    "source": "local"
+}]
+```
+
+**Force Redownload:**
+
+```python
+# Force redownload even if cached locally
+cartridges = [{
+    "id": "wauoq23f",
+    "source": "wandb",
+    "force_redownload": True
+}]
+```
+
+**Multiple Cartridges:**
+
+```python
+# Use multiple cartridges in a single request
+cartridges = [
+    {
+        "id": "cartridge1",
+        "source": "wandb"
+    },
+    {
+        "id": "cartridge2", 
+        "source": "huggingface"
+    }
+]
+```
+
+#### Cartridge Sources
+
+Tokasaurus supports loading cartridges from multiple sources:
+
+1. **Wandb**: The default source for cartridges trained and stored on Weights & Biases. Note that
+the server must have a WANDB_API_KEY environment variable set with an API token to access the cartridges.
+2. **HuggingFace**: Load cartridges from HuggingFace Hub repositories. Note that the server must have
+the appropriate permissions to access the repository in Hugging Face.
+3. **Local**: Use cartridges stored locally on the server filesystem. Note that cartridges of this type
+must be in the `./cartridges` directory relative to the server's working directory. Typically, these
+would be loaded onto the server before starting the server.
+
+### Training Cartridges
+
+In order to train a new cartridge, check out the Cartridges repo [here](https://github.com/HazyResearch/cartridges).
+
 ## System Design
 
 Tokasaurus has three major components:

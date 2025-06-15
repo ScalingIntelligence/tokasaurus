@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
 from typing import TYPE_CHECKING
+import re
 
 import psutil
 import requests
@@ -509,3 +510,49 @@ def error_propogation_decorator(func):
             raise
 
     return wrapper
+
+
+def sanitize_cartridge_id(cartridge_id: str) -> str:
+    """
+    Sanitize a cartridge ID to make it safe for use as a directory name.
+    
+    This function:
+    - Replaces forward slashes and backslashes with dashes
+    - Replaces other problematic characters (colon, pipe, etc.) with underscores
+    - Removes/replaces path traversal sequences
+    - Ensures the result is a valid directory name
+    
+    Args:
+        cartridge_id: The original cartridge ID
+        
+    Returns:
+        A sanitized cartridge ID safe for use in directory paths
+        
+    Raises:
+        ValueError: If the cartridge_id is empty or results in an empty string after sanitization
+    """
+    if not cartridge_id or not cartridge_id.strip():
+        raise ValueError("Cartridge ID cannot be empty")
+    
+    # Replace forward slashes and backslashes with dashes
+    sanitized = cartridge_id.replace("/", "-").replace("\\", "-")
+    
+    # Replace other problematic characters with underscores
+    # This includes: colon, pipe, question mark, asterisk, angle brackets, quotes
+    sanitized = re.sub(r'[:|*?<>"\'\x00-\x1f\x7f]', "_", sanitized)
+    
+    # Handle path traversal sequences more aggressively
+    # Replace any sequence that starts with dots
+    sanitized = re.sub(r'\.+', "_", sanitized)
+    
+    # Remove any remaining slashes that might have been missed
+    sanitized = sanitized.replace("/", "-").replace("\\", "-")
+    
+    # Trim whitespace and replace multiple consecutive special chars with single underscore
+    sanitized = re.sub(r'[_-]{2,}', "_", sanitized.strip())
+    
+    # Ensure it's not empty after sanitization
+    if not sanitized or sanitized in ["_"]:
+        sanitized = f"sanitized_{abs(hash(cartridge_id)) % 1000000}"
+    
+    return sanitized

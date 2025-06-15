@@ -61,6 +61,9 @@ def calc_block_usage_over_time(
 
     Returns results in order of earliest-finishing sequences to latest-finishing sequences
     (this list of sequences is returned too).
+    
+    Cartridge-aware: tracks which cartridge_ids are active to avoid double-counting
+    shared cartridge blocks.
     """
 
     # events[timestep] = (decode_finishes, prefill_finishes)
@@ -68,6 +71,14 @@ def calc_block_usage_over_time(
 
     # create a dummy event for the first step
     events_builder[0]
+
+    # Initialize with all blocks that are already allocated
+    # These blocks are already "used" from the beginning
+    used_blocks = set()
+    for seq in decoding_seqs + prefilling_seqs:
+        if seq.kv_indices is not None:
+            # Add all allocated blocks to the initial used_blocks set
+            used_blocks.update(seq.kv_indices)
 
     total_prefill = init_num_prefill
     for seq in prefilling_seqs:
@@ -112,7 +123,7 @@ def calc_block_usage_over_time(
         for timestep, (decode_finishes, prefill_finishes) in sorted_event_builder
     ]
 
-    used_blocks = set()
+    # used_blocks is already initialized above with all allocated blocks
     num_used_decode_blocks = 0
 
     points: list[BlockUsagePoint] = []
@@ -154,14 +165,18 @@ def calc_block_usage_over_time(
         freed_blocks = set()
 
         for seq in event.decode_finishes:
-            assert seq.kv_indices is not None
+            if seq.cartridge_indices:
+                # Add cartridge blocks to used_blocks
+                freed_blocks.update(seq.cartridge_indices)
+                used_blocks.update(seq.cartridge_indices)
 
-            # this tracking is aware of prefix sharing
-            kv_indices_set = set(seq.kv_indices)
-            delta_indices = kv_indices_set - used_blocks
+            # Handle token blocks (only kv_indices, not cartridge_indices)
+            if seq.kv_indices:
+                token_indices_set = set(seq.kv_indices)
+                delta_token_indices = token_indices_set - used_blocks
 
-            freed_blocks.update(delta_indices)
-            used_blocks.update(delta_indices)
+                freed_blocks.update(delta_token_indices)
+                used_blocks.update(delta_token_indices)
 
             additional_blocks_needed = seq.expected_num_additional_blocks(
                 page_size, add_buffer=add_buffer
@@ -177,6 +192,8 @@ def calc_block_usage_over_time(
                     seq.expected_last_page_len(page_size, add_buffer=add_buffer) - 1
                 ] += 1
             else:
+                # If sequence is expected to complete in 1 step, it shouldn't need additional blocks
+                # (since cartridge blocks + prompt blocks should be sufficient)
                 assert additional_blocks_needed == 0
 
         points.append(
@@ -505,9 +522,16 @@ def calc_prefill_per_forward(
                 predicted_queued_seqs.add(incoming_seq)
 
             # potential overestimate of number of blocks: no simulation of prefix caching
+            # This calculates only token blocks - add cartridge overhead
             incoming_blocks_needed = incoming_seq.expected_num_additional_blocks(
                 page_size
             )
+            
+            # Add cartridge overhead (these blocks will be shared, so this is a conservative estimate)
+            if incoming_seq.prepended_cartridge_ids:
+                # NOTE: This is a rough estimate - actual implementation would track which cartridges
+                # are already allocated. For now, we assume worst-case where we need all cartridge blocks.
+                incoming_blocks_needed += incoming_seq.get_num_cartridge_blocks()
 
             if incoming_blocks_needed <= expected_free_blocks:
                 queued_seqs.popleft()

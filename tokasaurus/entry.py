@@ -24,6 +24,10 @@ def make_engine(config: ServerConfig, dp_rank: int, master_port: int):
 
     q_manager_to_model = mp.Queue()
     q_model_to_manager = mp.Queue()
+    
+    # Download worker queues
+    q_download_requests = mp.Queue()
+    q_download_complete = mp.Queue()
 
     # Start the model process
     process_dict = get_model_process_dict(
@@ -33,6 +37,18 @@ def make_engine(config: ServerConfig, dp_rank: int, master_port: int):
         dp_rank=dp_rank,
         master_port=master_port,
     )
+    
+    # Add download worker process
+    from tokasaurus.manager.download_worker import start_download_worker
+    process_dict["download_worker"] = ProcessInfo(
+        target=start_download_worker,
+        kwargs={
+            "config": config,
+            "q_download_requests": q_download_requests,
+            "q_download_complete": q_download_complete,
+        },
+    )
+    
     process_dict["manager"] = ProcessInfo(
         target=start_manager,
         kwargs={
@@ -41,6 +57,8 @@ def make_engine(config: ServerConfig, dp_rank: int, master_port: int):
             "q_model_to_manager": q_model_to_manager,
             "q_server_to_manager": q_server_to_manager,
             "q_manager_to_server": q_manager_to_server,
+            "q_download_requests": q_download_requests,
+            "q_download_complete": q_download_complete,
         },
     )
 

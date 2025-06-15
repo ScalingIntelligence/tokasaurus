@@ -438,6 +438,12 @@ class LlamaLMHead(nn.Module):
             hidden_states = self.input_norm(needed_hidden_states)
 
             logits = self.lm_head(hidden_states).float()
+            # if not torch.cuda.is_current_stream_capturing():
+            #     print("batch_state:", batch_state)
+            #     if 32767 in batch_state.attention_info.prefill_info.kv_indices:
+            #         print("llama model logits:", logits)
+            #         torch.save(logits, "/tmp/tokasaurus_logits.pt")
+            #         raise Exception("Stop here")
 
             assert batch_state.sampling_params.top_p is None
             assert batch_state.sampling_params.temperature is not None
@@ -535,8 +541,10 @@ class LlamaModel(nn.Module):
         sin = self.rope_sin[batch_state.position_ids]
         out.position_embeddings = (cos, sin)
 
-        for layer in self.layers:
+        for layer_idx, layer in enumerate(self.layers):
             out = layer(out)
+            if not torch.cuda.is_current_stream_capturing() and layer_idx == 0:
+                torch.save(out.hidden_states, "/tmp/tokasaurus_layer_0_hidden_states.pt")
         return out
 
 
@@ -874,6 +882,7 @@ class LlamaForCausalLM(nn.Module):
         self,
         model_path: Path,
     ):
+        print("Loading from safetensors model_path", model_path)
         name_to_hf_name = self.make_name_to_hf_name()
         all_hf_names = set(name_to_hf_name.values())
 

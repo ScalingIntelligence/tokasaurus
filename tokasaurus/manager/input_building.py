@@ -161,7 +161,15 @@ def seqs_to_input(
 
     for i, (seq, slen) in enumerate(prefill_seqs):
         assert seq.completion_scheduled == 0
-        assert seq.kv_indices is not None
+        
+        # Calculate cartridge offset in tokens
+        cartridge_tokens = 0
+        if seq.cartridge_indices:
+            cartridge_tokens = len(seq.cartridge_indices) * page_size
+        
+        # Use total block indices (cartridge + token) for model input
+        total_kv_indices = seq.total_block_indices()
+        assert len(total_kv_indices) > 0
 
         start_position = seq.prompt_scheduled
         if i == 0:
@@ -174,21 +182,25 @@ def seqs_to_input(
 
         prefill_input_ids_list.extend(prefill_ids)
 
-        seq_pos_ids = list(range(start_position, end_position))
+        # Position IDs need to be offset by cartridge space
+        seq_pos_ids = list(range(cartridge_tokens + start_position, cartridge_tokens + end_position))
         position_ids.extend(seq_pos_ids)
 
+        # Calculate total KV sequence length including cartridge space
+        total_kv_seq_len = cartridge_tokens + start_position + slen
+
         prefill_builder.add_sequence(
-            kv_indices=seq.kv_indices,
-            kv_seq_len=start_position + slen,
+            kv_indices=total_kv_indices,
+            kv_seq_len=total_kv_seq_len,  # Now includes cartridge space
             num_qtokens=slen,
             page_size=page_size,
         )
 
         append_kv_token_indices.extend(
             calc_kv_token_indices(
-                kv_block_indices=seq.kv_indices,
+                kv_block_indices=total_kv_indices,
                 page_size=page_size,
-                start_idx=start_position,
+                start_idx=cartridge_tokens + start_position,  # Offset by cartridge space
                 num_tokens=slen,
             )
         )
@@ -228,10 +240,16 @@ def seqs_to_input(
                 sid_to_group[sid] = group
 
     for seq in decoding_seqs:
+        # Calculate cartridge offset in tokens
+        cartridge_tokens = 0
+        if seq.cartridge_indices:
+            cartridge_tokens = len(seq.cartridge_indices) * page_size
+        
         # NOTE: minus one since last prefill token produces first
         # decode token.
         current_token_pos_id = seq.total_scheduled() - 1
-        position_ids.append(current_token_pos_id)
+        # Position ID needs to be offset by cartridge space
+        position_ids.append(cartridge_tokens + current_token_pos_id)
 
         if use_hydragen and seq.id in sid_to_group:
             group = sid_to_group[seq.id]
@@ -239,20 +257,27 @@ def seqs_to_input(
         else:
             starting_block = 0
 
-        assert seq.kv_indices is not None
+        # Use total block indices (cartridge + token) for model input
+        total_kv_indices = seq.total_block_indices()
+        assert len(total_kv_indices) > 0
+        
+        # Calculate total KV sequence length including cartridge space
+        total_kv_seq_len = cartridge_tokens + current_token_pos_id + 1
+        
         decode_builder.add_sequence(
-            kv_indices=seq.kv_indices,
-            kv_seq_len=current_token_pos_id + 1,
+            kv_indices=total_kv_indices,
+            kv_seq_len=total_kv_seq_len,  # Now includes cartridge space
             num_qtokens=1,
             page_size=page_size,
             starting_block=starting_block,
         )
+        
         # starting block of 0 needed for append
         append_kv_token_indices.extend(
             calc_kv_token_indices(
-                kv_block_indices=seq.kv_indices,
+                kv_block_indices=total_kv_indices,
                 page_size=page_size,
-                start_idx=current_token_pos_id,
+                start_idx=cartridge_tokens + current_token_pos_id,  # Offset by cartridge space
                 num_tokens=1,
             )
         )
