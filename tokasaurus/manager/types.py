@@ -32,8 +32,10 @@ class CartridgeConfig:
             config_data = yaml.safe_load(f)
         
         # Extract max_tokens from kv_cache_initializer section
-        kv_cache_init = config_data.get("kv_cache_initializer", {})
-        max_tokens = kv_cache_init.get("max_tokens", 2048)
+        kv_cache_init = config_data.get("kv_cache_initializer", {}).get("value", {})
+        max_tokens = kv_cache_init.get("max_tokens")
+        if max_tokens is None:
+            raise ValueError(f"max_tokens not found in {config_path}")
         
         # Extract model information
         model_config = config_data.get("model", {})
