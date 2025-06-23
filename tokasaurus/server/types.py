@@ -6,7 +6,7 @@ from typing import Literal, Optional, Union
 
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.file_object import FileObject
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def nowstamp():
@@ -27,7 +27,8 @@ class CompletionsRequest(BaseModel):
     frequency_penalty: Optional[float] = 0.0
     logit_bias: Optional[dict[str, float]] = None
     logprobs: Optional[int] = None
-    max_tokens: Optional[int] = 16
+    max_tokens: Optional[int] = None  # Default will be handled by validator
+    max_completion_tokens: Optional[int] = None  # New field
     n: int = 1
     presence_penalty: Optional[float] = 0.0
     seed: Optional[int] = None
@@ -45,6 +46,39 @@ class CompletionsRequest(BaseModel):
 
     class Config:
         extra = "forbid"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_max_tokens(cls, values):
+        max_tokens = values.get("max_tokens")
+        max_completion_tokens = values.get("max_completion_tokens")
+
+        if max_tokens is not None and max_completion_tokens is not None:
+            raise ValueError(
+                "Only one of 'max_tokens' or 'max_completion_tokens' can be set."
+            )
+
+        if max_completion_tokens is not None:
+            values["max_tokens"] = max_completion_tokens
+        elif max_tokens is None: # Neither is set, apply default
+            values["max_tokens"] = 16 # Default value
+
+        # Ensure max_completion_tokens is not passed to the model constructor after this
+        # as it's not a field it would recognize after our aliasing trick.
+        # However, Pydantic v2 'before' validator means we modify the dict before
+        # the main model validation, so we don't need to pop it if it's not a real field.
+        # If max_completion_tokens was a real field, we'd do:
+        # if "max_completion_tokens" in values:
+        #     del values["max_completion_tokens"]
+        # But since it's not in the model fields (we only added it to the input `values`),
+        # Pydantic will ignore it if `extra = "ignore"` or forbid it if `extra = "forbid"`
+        # unless it's explicitly defined.
+
+        # Let's define max_completion_tokens as a field to make it explicit and then it will be ignored
+        # by the model itself if not used further. The primary purpose is to perform this validation
+        # and consolidation into max_tokens.
+
+        return values
 
 
 class JsonSchemaResponseFormat(BaseModel):
@@ -69,7 +103,8 @@ class ChatCompletionRequest(BaseModel):
     logit_bias: Optional[dict[str, float]] = None
     logprobs: Optional[bool] = False
     top_logprobs: Optional[int] = None
-    max_tokens: Optional[int] = None
+    max_tokens: Optional[int] = None # Default is None, validator will handle logic
+    max_completion_tokens: Optional[int] = None # New field
     n: Optional[int] = 1
     presence_penalty: Optional[float] = 0.0
     response_format: Optional[ResponseFormat] = None
@@ -87,6 +122,32 @@ class ChatCompletionRequest(BaseModel):
 
     class Config:
         extra = "forbid"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_chat_max_tokens(cls, values):
+        max_tokens = values.get("max_tokens")
+        max_completion_tokens = values.get("max_completion_tokens")
+
+        if max_tokens is not None and max_completion_tokens is not None:
+            raise ValueError(
+                "Only one of 'max_tokens' or 'max_completion_tokens' can be set for ChatCompletionRequest."
+            )
+
+        if max_completion_tokens is not None:
+            values["max_tokens"] = max_completion_tokens
+        elif max_tokens is not None:
+            # max_tokens is already set, and max_completion_tokens is None.
+            # No change needed to values["max_tokens"].
+            pass
+        else:
+            # Both are None, so max_tokens remains None as per its field definition.
+            values["max_tokens"] = None
+
+        # As with CompletionsRequest, Pydantic handles max_completion_tokens
+        # not being an actual model field after this 'before' validator
+        # if it's defined in the model itself.
+        return values
 
 
 class BatchCreationRequest(BaseModel):
