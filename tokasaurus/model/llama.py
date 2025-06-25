@@ -112,8 +112,7 @@ class LlamaAttention(nn.Module):
         self.tp_size = extra_config.tp_size or 1
 
         assert config.num_attention_heads % self.tp_size == 0
-        head_dim = config.hidden_size // config.num_attention_heads
-        self.head_dim = head_dim
+        head_dim = self.head_dim
 
         assert self.config.num_attention_heads % self.tp_size == 0
         assert (
@@ -155,6 +154,10 @@ class LlamaAttention(nn.Module):
         self.attention_info: AttentionInfo | None = None
 
         self.attn_fn = self.make_attn_fn()
+    
+    @property
+    def head_dim(self):
+        return self.config.hidden_size // self.config.num_attention_heads
 
     def make_attn_fn(self):
         @torch.library.custom_op(
@@ -595,6 +598,10 @@ class LlamaForCausalLM(nn.Module):
         tp_size = self.extra_config.tp_size
         assert all_heads % tp_size == 0
         return all_heads // tp_size
+    
+    @property
+    def head_dim(self):
+        return self.config.hidden_size // self.config.num_attention_heads
 
     def forward(
         self,
@@ -651,7 +658,7 @@ class LlamaForCausalLM(nn.Module):
             if isinstance(layer, LlamaAttention):
                 layer.attention_info = attn_info
 
-        head_dim = self.config.hidden_size // self.config.num_attention_heads
+        head_dim = self.head_dim
 
         num_qo_heads = self.num_qo_heads()
         num_kv_heads = self.num_kv_heads()

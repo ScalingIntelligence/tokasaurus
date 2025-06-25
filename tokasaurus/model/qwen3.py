@@ -39,35 +39,14 @@ class Qwen3Attention(LlamaAttention):
     def __init__(self, config, layer_idx, extra_config):
         super().__init__(config, layer_idx, extra_config)
         
-        # Override head_dim if explicitly set in config (Qwen3 uses explicit head_dim)
-        if hasattr(config, 'head_dim') and config.head_dim is not None:
-            self.head_dim = config.head_dim
-            
-            # Recreate projection layers with correct dimensions
-            self.q_proj = nn.Linear(
-                self.config.hidden_size,
-                self.num_attention_heads * self.head_dim,
-                bias=self.qkv_bias,
-            )
-            self.k_proj = nn.Linear(
-                self.config.hidden_size,
-                self.num_kv_heads * self.head_dim,
-                bias=self.qkv_bias,
-            )
-            self.v_proj = nn.Linear(
-                self.config.hidden_size,
-                self.num_kv_heads * self.head_dim,
-                bias=self.qkv_bias,
-            )
-            self.o_proj = nn.Linear(
-                self.num_attention_heads * self.head_dim,
-                config.hidden_size,
-                bias=False,
-            )
-        
         # Add query and key normalization as in Qwen3
         self.q_norm = Qwen3RMSNorm(self.head_dim, config.rms_norm_eps)
         self.k_norm = Qwen3RMSNorm(self.head_dim, config.rms_norm_eps)
+    
+    @property
+    def head_dim(self):
+        # Qwen3 uses explicit head_dim in the config, instead of inferring it from hidden_size and num_attention_heads
+        return self.config.head_dim
 
     def forward(
         self,
@@ -163,81 +142,9 @@ class Qwen3ForCausalLM(LlamaForCausalLM):
     model_cls = Qwen3Model
     config_cls = Qwen3Config
 
-    def plan(self, attn_info, non_blocking: bool = False):
-        """Override to use explicit head_dim from config instead of calculated value"""
-        wrappers = self.wrapper_collection
-        assert wrappers is not None
-
-        for layer in self.model.modules():
-            if isinstance(layer, LlamaAttention):
-                layer.attention_info = attn_info
-
-        # Use explicit head_dim from config if available (Qwen3 specific)
-        if hasattr(self.config, 'head_dim') and self.config.head_dim is not None:
-            head_dim = self.config.head_dim
-        else:
-            head_dim = self.config.hidden_size // self.config.num_attention_heads
-
-        num_qo_heads = self.num_qo_heads()
-        num_kv_heads = self.num_kv_heads()
-
-        page_size = attn_info.page_size
-        q_data_type = self.dtype
-        kv_data_type = self.dtype
-
-        if (
-            prefill_info := attn_info.prefill_info
-        ) is not None and prefill_info.num_tokens > 0:
-            assert prefill_info.qo_indptr is not None
-            wrappers.prefill_wrapper.plan(
-                qo_indptr=prefill_info.qo_indptr,
-                paged_kv_indptr=prefill_info.kv_indptr,
-                paged_kv_indices=prefill_info.kv_indices,
-                paged_kv_last_page_len=prefill_info.kv_last_page_len,
-                num_kv_heads=num_kv_heads,
-                num_qo_heads=num_qo_heads,
-                head_dim=head_dim,
-                page_size=page_size,
-                q_data_type=q_data_type,
-                kv_data_type=kv_data_type,
-                causal=True,
-                non_blocking=non_blocking,
-            )
-
-        if (
-            hydragen_info := attn_info.hydragen_info
-        ) is not None and hydragen_info.num_tokens > 0:
-            assert hydragen_info.qo_indptr is not None
-            wrappers.hydragen_wrapper.plan(
-                qo_indptr=hydragen_info.qo_indptr,
-                paged_kv_indptr=hydragen_info.kv_indptr,
-                paged_kv_indices=hydragen_info.kv_indices,
-                paged_kv_last_page_len=hydragen_info.kv_last_page_len,
-                num_kv_heads=num_kv_heads,
-                num_qo_heads=num_qo_heads,
-                head_dim=head_dim,
-                page_size=page_size,
-                q_data_type=q_data_type,
-                kv_data_type=kv_data_type,
-                causal=False,
-                non_blocking=non_blocking,
-            )
-
-        if (
-            decode_info := attn_info.decode_info
-        ) is not None and decode_info.num_tokens > 0:
-            wrappers.decode_wrapper.plan(
-                indptr=decode_info.kv_indptr,
-                indices=decode_info.kv_indices,
-                last_page_len=decode_info.kv_last_page_len,
-                num_kv_heads=num_kv_heads,
-                num_qo_heads=num_qo_heads,
-                head_dim=head_dim,
-                page_size=page_size,
-                q_data_type=q_data_type,
-                kv_data_type=kv_data_type,
-                non_blocking=non_blocking,
-            )
+    @property
+    def head_dim(self):
+        return self.config.head_dim
 
     def make_name_to_hf_name(self):
         """Override to add q_norm and k_norm parameter mappings"""
