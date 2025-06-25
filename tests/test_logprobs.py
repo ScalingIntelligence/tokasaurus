@@ -17,7 +17,11 @@ from tokasaurus.entry import server_manager
 from tokasaurus.utils import find_free_port
 
 
-MODEL = os.environ.get("MODEL", "meta-llama/Llama-3.2-1B-Instruct")
+MODEL = os.environ.get(
+    "MODEL", 
+    # "meta-llama/Llama-3.2-1B-Instruct",
+    "Qwen/Qwen2-0.5B-Instruct"
+)
 OVERRIDES = os.environ.get("OVERRIDES", None)
 MODE = os.environ.get("MODE", "simple")
 PROB_REL_TOL = float(os.environ.get("PROB_REL_TOL", 0.1))
@@ -103,6 +107,7 @@ def hf_model_and_tokenizer() -> tuple[torch.nn.Module, AutoTokenizer]:
 PROMPTS = {
     "abc": "Please repeat the following pattern:" + "a b c d e f g h i j k l m n o p q r s a b c d e f g h i j k l m n o p q r s" * 10,
     "story": "Can you tell me a long story about a cat?",
+    
 }
 
 @pytest.mark.parametrize("prompt_name", list(PROMPTS.keys()))
@@ -111,9 +116,9 @@ def test_logprobs(client: OpenAI, hf_model_and_tokenizer: tuple[torch.nn.Module,
     response = client.chat.completions.create(
         model="none",
         messages=[
-            {"role": "user", "content": abc_prompt},
+            {"role": "user", "content": prompt},
         ],
-        max_tokens=10,
+        max_tokens=128,
         temperature=0.0,
         logprobs=1, 
     )
@@ -129,7 +134,7 @@ def test_logprobs(client: OpenAI, hf_model_and_tokenizer: tuple[torch.nn.Module,
 
         input_ids = tokenizer.apply_chat_template(
             [
-                {"role": "user", "content": abc_prompt},
+                {"role": "user", "content": prompt},
             ],
             add_generation_prompt=True,
         ) + seq_ids
