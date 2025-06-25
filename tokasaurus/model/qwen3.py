@@ -29,8 +29,7 @@ class Qwen3RMSNorm(nn.Module):
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
         hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
-        output = self.weight * hidden_states
-        return output.to(input_dtype)
+        return self.weight * hidden_states.to(input_dtype)
 
 
 class Qwen3Attention(LlamaAttention):
@@ -71,17 +70,21 @@ class Qwen3Attention(LlamaAttention):
         key_proj = self.k_proj(hidden_states)
         value_proj = self.v_proj(hidden_states)
 
-        # Reshape and apply normalization (following HF implementation order)
-        query_states = query_proj.view(bsz, self.num_attention_heads, self.head_dim)
-        key_states = key_proj.view(bsz, self.num_kv_heads, self.head_dim)
+        # Follow HF implementation exactly: project -> view -> normalize -> reshape
+        # HF does: view([batch, seq_len, num_heads, head_dim]) -> normalize -> transpose([batch, num_heads, seq_len, head_dim])
+        # For our single-token case: seq_len = 1
+        
+        # Apply normalization in the same tensor layout as HF: [batch, seq_len=1, num_heads, head_dim]
+        query_states = self.q_norm(query_proj.view(bsz, 1, self.num_attention_heads, self.head_dim))
+        key_states = self.k_norm(key_proj.view(bsz, 1, self.num_kv_heads, self.head_dim))
+        
+        # Reshape for tokasaurus_attention: [batch, num_heads, head_dim] 
+        query_states = query_states.view(bsz, self.num_attention_heads, self.head_dim)
+        key_states = key_states.view(bsz, self.num_kv_heads, self.head_dim)
         value_states = value_proj.view(bsz, self.num_kv_heads, self.head_dim)
 
-        # Store original dtype before normalization
+        # Store original dtype 
         dtype = query_states.dtype
-
-        # Apply query and key normalization before rotary embeddings (as in HF)
-        query_states = self.q_norm(query_states).to(dtype)
-        key_states = self.k_norm(key_states).to(dtype)
 
         cos, sin = batch_state.position_embeddings
 

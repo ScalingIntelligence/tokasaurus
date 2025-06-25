@@ -3,8 +3,7 @@ As a running example, we'll describe adding support for the **Qwen-3** family of
 The same high-level steps apply to any model that can be framed as a (possibly light)
 variant of the Llama / Qwen-2 architecture.
 
-**Note**: Qwen3 support requires `transformers >= 4.51.0`. For older versions, the implementation falls back to using `Qwen2Config` since Qwen3 is architecturally very similar to Qwen2.
-
+**Note**: This document is as much for human developers as it is for coding agents :) 
 ---
 
 ## 1. Implement the modelling file
@@ -67,12 +66,6 @@ assertion failures**:
 
 ```bash
 MODEL=Qwen/Qwen3-0.6B pytest tests/test_logprobs.py -k test_logprobs -s
-```
-
-**Note**: This test requires `transformers >= 4.51.0` to access the actual Qwen3 models. With older versions, you can verify the implementation works by testing with a Qwen2 model:
-
-```bash
-MODEL=Qwen/Qwen2-0.5B pytest tests/test_logprobs.py -k test_logprobs -s
 ```
 
 Tips to debug failures:

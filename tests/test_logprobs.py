@@ -118,7 +118,7 @@ def test_logprobs(client: OpenAI, hf_model_and_tokenizer: tuple[torch.nn.Module,
         messages=[
             {"role": "user", "content": prompt},
         ],
-        max_tokens=16,
+        max_tokens=128,
         temperature=0.0,
         logprobs=1, 
     )
