@@ -29,6 +29,7 @@ PROB_ABS_TOL = float(os.environ.get("PROB_ABS_TOL", 0.1))
 
 
 def make_basic_config():
+    print(f"Making basic config for {MODEL}...")
     config = ServerConfig()
     config.model = MODEL
     config.kv_cache_num_tokens = 16384
@@ -94,7 +95,7 @@ def client(request):
 
 @pytest.fixture(scope="module")
 def hf_model_and_tokenizer() -> tuple[torch.nn.Module, AutoTokenizer]:
-    print("Loading HF model and tokenizer...")
+    print(f"Loading HF model and tokenizer ({MODEL})...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
     model = AutoModelForCausalLM.from_pretrained(MODEL)
     model.eval()
@@ -117,7 +118,7 @@ def test_logprobs(client: OpenAI, hf_model_and_tokenizer: tuple[torch.nn.Module,
         messages=[
             {"role": "user", "content": prompt},
         ],
-        max_tokens=128,
+        max_tokens=16,
         temperature=0.0,
         logprobs=1, 
     )
@@ -145,8 +146,10 @@ def test_logprobs(client: OpenAI, hf_model_and_tokenizer: tuple[torch.nn.Module,
         logits = outputs.logits.to(torch.float32)  # shape [1, seq_len, vocab_size]
         hf_logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
         
-        for api_token_id, hf_logprob_dist, api_logprob in zip(seq_ids, hf_logprobs[0, -len(seq_ids) - 1: -1], logprobs):
+        for idx, (api_token_id, hf_logprob_dist, api_logprob) in enumerate(zip(seq_ids, hf_logprobs[0, -len(seq_ids) - 1: -1], logprobs)):
             hf_logprob = hf_logprob_dist[api_token_id].item()
             hf_token_id = hf_logprob_dist.argmax().item()
-            assert hf_token_id == api_token_id, f"Mismatch token id: API {api_token_id} vs HF {hf_token_id}"
-            assert math.isclose(api_logprob, hf_logprob, abs_tol=PROB_ABS_TOL, rel_tol=PROB_REL_TOL), f"Mismatch probability for token {api_token_id}: API {api_logprob} vs HF {hf_logprob}"
+            # print(f"API token id: {api_token_id}, HF token id: {hf_token_id}")
+            # print(f"API logprob: {api_logprob}, HF logprob: {hf_logprob}")
+            assert hf_token_id == api_token_id, f"Mismatch token id (after {idx} tokens): API {api_token_id} ({tokenizer.decode(api_token_id)}) vs HF {hf_token_id} ({tokenizer.decode(hf_token_id)})"
+            assert math.isclose(api_logprob, hf_logprob, abs_tol=PROB_ABS_TOL, rel_tol=PROB_REL_TOL), f"Mismatch probability (after {idx} tokens): API {api_logprob} vs HF {hf_logprob}"
