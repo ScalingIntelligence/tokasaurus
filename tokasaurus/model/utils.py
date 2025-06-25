@@ -18,6 +18,7 @@ from tokasaurus.manager.input_building import make_dummy_batch
 from tokasaurus.model.attention_utils import create_wrappers_for_cudagraph
 from tokasaurus.model.llama import LlamaForCausalLM
 from tokasaurus.model.qwen import Qwen2ForCausalLM
+from tokasaurus.model.qwen3 import Qwen3ForCausalLM
 from tokasaurus.model.types import (
     BasicWorkerState,
     BatchState,
@@ -328,11 +329,12 @@ def run_overlapped_loop(
             break
 
 
-model_type = LlamaForCausalLM | Qwen2ForCausalLM
+model_type = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM
 
 models: dict[str, type[model_type]] = {
     "llama": LlamaForCausalLM,
     "qwen2": Qwen2ForCausalLM,
+    "qwen3": Qwen3ForCausalLM,
 }
 
 

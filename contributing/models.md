@@ -3,6 +3,8 @@ As a running example, we'll describe adding support for the **Qwen-3** family of
 The same high-level steps apply to any model that can be framed as a (possibly light)
 variant of the Llama / Qwen-2 architecture.
 
+**Note**: Qwen3 support requires `transformers >= 4.51.0`. For older versions, the implementation falls back to using `Qwen2Config` since Qwen3 is architecturally very similar to Qwen2.
+
 ---
 
 ## 1. Implement the modelling file
@@ -64,7 +66,13 @@ You have succeeded when the following command passes **without GPU OOMs or
 assertion failures**:
 
 ```bash
-MODEL=Qwen/Qwen3-0.6B pytest tests/test_logprobs.py -k test_logprobs
+MODEL=Qwen/Qwen3-0.6B pytest tests/test_logprobs.py -k test_logprobs -s
+```
+
+**Note**: This test requires `transformers >= 4.51.0` to access the actual Qwen3 models. With older versions, you can verify the implementation works by testing with a Qwen2 model:
+
+```bash
+MODEL=Qwen/Qwen2-0.5B pytest tests/test_logprobs.py -k test_logprobs -s
 ```
 
 Tips to debug failures:
@@ -72,16 +80,4 @@ Tips to debug failures:
 * Run the server directly via `python -m tokasaurus.entry --config …` and send
 a manual request with the OpenAI client.
 
-
-
----
-
-## 6. Submit the pull request
-
-1. Open your PR against `main` (or the current development branch).
-2. Fill in the checklist in `contributing/PR_TEMPLATE.md`.
-3. Add a short entry to `CHANGELOG.md` under *Unreleased*.
-4. If the model is larger than 1 B parameters, please also upload benches
-   produced by `tokasaurus/benchmarks/bench_model.py`.
-
-Happy hacking — and **thank you** for contributing a new model! 🍍
+AGENT
