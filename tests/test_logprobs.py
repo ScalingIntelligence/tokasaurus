@@ -95,9 +95,8 @@ def client(request):
 @pytest.fixture(scope="module")
 def hf_model_and_tokenizer() -> tuple[torch.nn.Module, AutoTokenizer]:
     print("Loading HF model and tokenizer...")
-    model_name = os.environ.get("MODEL", "meta-llama/Llama-3.2-1B-Instruct")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL)
+    model = AutoModelForCausalLM.from_pretrained(MODEL)
     model.eval()
     model.to("cuda", dtype=torch.bfloat16)
     print("Loaded HF model and tokenizer.")
