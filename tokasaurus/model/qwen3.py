@@ -70,15 +70,18 @@ class Qwen3Attention(LlamaAttention):
         key_proj = self.k_proj(hidden_states)
         value_proj = self.v_proj(hidden_states)
 
-        # Follow HF implementation exactly: project -> view -> normalize -> reshape
-        # HF does: view([batch, seq_len, num_heads, head_dim]) -> normalize -> transpose([batch, num_heads, seq_len, head_dim])
-        # For our single-token case: seq_len = 1
+        # In tokasaurus, hidden_states is already 2D: [total_tokens, hidden_size]
+        # We need to reshape to [total_tokens, num_heads, head_dim] for normalization
+        # then back to [total_tokens, num_heads, head_dim] for attention
         
-        # Apply normalization in the same tensor layout as HF: [batch, seq_len=1, num_heads, head_dim]
+        # Match HuggingFace exactly: q_proj -> view -> q_norm 
+        # Note: In tokasaurus, bsz represents total tokens, not batch size
+        # HF uses: query_proj.view(batch_size, seq_len, num_heads, head_dim)
+        # We use: query_proj.view(total_tokens, 1, num_heads, head_dim) since each "token" is independent
         query_states = self.q_norm(query_proj.view(bsz, 1, self.num_attention_heads, self.head_dim))
         key_states = self.k_norm(key_proj.view(bsz, 1, self.num_kv_heads, self.head_dim))
         
-        # Reshape for tokasaurus_attention: [batch, num_heads, head_dim] 
+        # Flatten back to [total_tokens, num_heads, head_dim] for tokasaurus attention
         query_states = query_states.view(bsz, self.num_attention_heads, self.head_dim)
         key_states = key_states.view(bsz, self.num_kv_heads, self.head_dim)
         value_states = value_proj.view(bsz, self.num_kv_heads, self.head_dim)
