@@ -158,4 +158,4 @@ def test_logprobs(client: OpenAI, hf_model_and_tokenizer: tuple[torch.nn.Module,
             logprob_diff.append(abs(api_logprob - hf_logprob))
         print(f"Token match rate: {sum(token_match) / len(token_match)} ({sum(token_match)}/{len(token_match)})")
         print(f"Average logprob difference: {sum(logprob_diff) / len(logprob_diff)}, max logprob difference: {max(logprob_diff)}")
-        assert sum(token_match) / len(token_match) > 0.95, f"Token match rate: {sum(token_match) / len(token_match)}"
+        assert sum(token_match) / len(token_match) > 0.99, f"Token match rate: {sum(token_match) / len(token_match)}"
