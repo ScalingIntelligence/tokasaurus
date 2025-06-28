@@ -1,4 +1,4 @@
 {
-"typeCheckingMode": "off"
-
+    "reportOptionalMemberAccess": "none",
+    "reportPossiblyUnboundVariable": "none"
 }
