@@ -86,12 +86,18 @@ def last_page_len(length: int, page_size: int):
 
 
 def tp_slice(x: Tensor, tp_rank: int, tp_size: int) -> Tensor:
+    if tp_size == 1:
+        return x
+
     bs = x.shape[0]
     assert bs % tp_size == 0, f"bs={bs} must be divisible by tp_size={tp_size}"
     bs_per_rank = bs // tp_size
     tp_start = tp_rank * bs_per_rank
     tp_end = tp_start + bs_per_rank
-    return x[tp_start:tp_end]
+
+    # clone is important for compile - compile
+    # guards are used that check for if something is a view
+    return x[tp_start:tp_end].clone()
 
 
 def pad_and_slice_tensor(
@@ -109,7 +115,8 @@ def make_input_batch_state(
     tp_size: int = 1,
     pp_rank: int = 0,
     pp_size: int = 1,
-    add_raw_lm_head_indices: bool = False,
+    num_total_padding: int = 0,
+    num_lm_head_padding: int = 0,
 ):
     skip_input_ids = pp_size > 1 and pp_rank > 0
     skip_lm_head_indices = pp_size > 1 and pp_rank < pp_size - 1
@@ -141,67 +148,55 @@ def make_input_batch_state(
         position_ids=position_ids,
         sampling_params=sampling_params,
         lm_head_indices=lm_head_indices,
-        raw_lm_head_indices=lm_head_indices if add_raw_lm_head_indices else None,
+        num_total_padding=num_total_padding,
+        num_lm_head_padding=num_lm_head_padding,
     )
+    input_batch_state.attention_info.num_padding = num_total_padding
 
-    if tp_size > 1:
-        assert tp_rank is not None
-        bs = input_batch_state.position_ids.shape[0]
-        padded_bs = math.ceil(bs / tp_size) * tp_size
-        num_padding = padded_bs - bs
-        input_batch_state.attention_info.num_padding = num_padding
+    if num_total_padding > 0:
+        input_batch_state.position_ids = F.pad(
+            input_batch_state.position_ids,
+            (0, num_total_padding),
+            value=0,
+        )
 
-        if num_padding > 0:
-            input_batch_state.position_ids = F.pad(
-                input_batch_state.position_ids,
-                (0, num_padding),
-                value=0,
-            )
+    if not skip_lm_head_indices:
+        assert input_batch_state.lm_head_indices is not None
 
-        if not skip_lm_head_indices:
-            assert input_batch_state.lm_head_indices is not None
+        if (tp_size > 1 or num_lm_head_padding > 0) and pp_size == 1:
+            # in this case, we need the OG lm head indices to update the most-recent-token buffers
+            input_batch_state.raw_lm_head_indices = input_batch_state.lm_head_indices
 
-            num_lm_head_indices = input_batch_state.lm_head_indices.shape[0]
-            padded_num_lm_head_indices = (
-                math.ceil(num_lm_head_indices / tp_size) * tp_size
-            )
-            lm_head_indices_padding = padded_num_lm_head_indices - num_lm_head_indices
-            input_batch_state.lm_head_indices_padding = lm_head_indices_padding
+        input_batch_state.lm_head_indices = pad_and_slice_tensor(
+            input_batch_state.lm_head_indices,
+            num_lm_head_padding,
+            tp_rank,
+            tp_size,
+        )
 
-            input_batch_state.lm_head_indices = pad_and_slice_tensor(
-                input_batch_state.lm_head_indices,
-                lm_head_indices_padding,
+        if (greedy_mask := input_batch_state.sampling_params.greedy_mask) is not None:
+            input_batch_state.sampling_params.greedy_mask = pad_and_slice_tensor(
+                greedy_mask,
+                num_lm_head_padding,
                 tp_rank,
                 tp_size,
             )
 
-            if (
-                greedy_mask := input_batch_state.sampling_params.greedy_mask
-            ) is not None:
-                input_batch_state.sampling_params.greedy_mask = pad_and_slice_tensor(
-                    greedy_mask,
-                    lm_head_indices_padding,
-                    tp_rank,
-                    tp_size,
-                )
+        if (top_p := input_batch_state.sampling_params.top_p) is not None:
+            input_batch_state.sampling_params.top_p = pad_and_slice_tensor(
+                top_p,
+                num_lm_head_padding,
+                tp_rank,
+                tp_size,
+            )
 
-            if (top_p := input_batch_state.sampling_params.top_p) is not None:
-                input_batch_state.sampling_params.top_p = pad_and_slice_tensor(
-                    top_p,
-                    lm_head_indices_padding,
-                    tp_rank,
-                    tp_size,
-                )
-
-            if (
-                temperature := input_batch_state.sampling_params.temperature
-            ) is not None:
-                input_batch_state.sampling_params.temperature = pad_and_slice_tensor(
-                    temperature,
-                    lm_head_indices_padding,
-                    tp_rank,
-                    tp_size,
-                )
+        if (temperature := input_batch_state.sampling_params.temperature) is not None:
+            input_batch_state.sampling_params.temperature = pad_and_slice_tensor(
+                temperature,
+                num_lm_head_padding,
+                tp_rank,
+                tp_size,
+            )
 
     return input_batch_state
 
@@ -213,24 +208,18 @@ def add_decoding_ids_to_batch_state(
     tp_size: int = 1,
 ):
     assert input_batch_state.prefill_input_ids is not None
-    input_batch_state.input_ids = torch.cat(
+    input_ids = torch.cat(
         [input_batch_state.prefill_input_ids, decoding_input_ids], dim=0
     )
 
-    if tp_size > 1:
-        num_padding = input_batch_state.attention_info.num_padding
-        if num_padding > 0:
-            input_batch_state.input_ids = F.pad(
-                input_batch_state.input_ids,
-                (0, num_padding),
-                value=0,
-            )
+    padded_sliced = pad_and_slice_tensor(
+        input_ids,
+        num_padding=input_batch_state.num_total_padding,
+        tp_rank=tp_rank,
+        tp_size=tp_size,
+    )
 
-        input_batch_state.input_ids = tp_slice(
-            input_batch_state.input_ids, tp_rank, tp_size
-        )
-
-    # don't need it anymore, no need to move it to device
+    input_batch_state.input_ids = padded_sliced
     input_batch_state.prefill_input_ids = None
 
 
@@ -409,7 +398,7 @@ def run_warmup_batches(
     """
 
     max_tokens_per_forward = math.ceil(config.max_tokens_per_forward / config.pp_size)
-    max_decode_tokens_per_forward = min(
+    max_lm_head_tokens_per_forward = min(
         config.max_seqs_per_forward, max_tokens_per_forward
     )
 
@@ -417,16 +406,18 @@ def run_warmup_batches(
 
     decode_sizes = [
         0,
+        1,
         1 * config.tp_size,
         2 * config.tp_size,
-        max_decode_tokens_per_forward,
+        max_lm_head_tokens_per_forward,
     ]
 
     prefill_sizes = [
         0,
+        1,
         1 * config.tp_size,
         2 * config.tp_size,
-        max_tokens_per_forward - max_decode_tokens_per_forward,
+        max_tokens_per_forward - max_lm_head_tokens_per_forward,
         max_tokens_per_forward,
     ]
 
@@ -440,11 +431,23 @@ def run_warmup_batches(
 
     for num_decode_tokens in decode_sizes:
         for num_prefill_tokens in prefill_sizes:
-            total_tokens = num_prefill_tokens + num_decode_tokens
-            if total_tokens <= 0 or total_tokens > max_tokens_per_forward:
-                continue
+            for prefill_uses_lm_head in [True, False]:
+                total_tokens = num_prefill_tokens + num_decode_tokens
+                total_lm_head_tokens = num_decode_tokens + (
+                    1 if prefill_uses_lm_head else 0
+                )
+                if total_tokens <= 0 or total_tokens > max_tokens_per_forward:
+                    continue
 
-            configs.append((num_prefill_tokens, num_decode_tokens))
+                if total_lm_head_tokens > max_lm_head_tokens_per_forward:
+                    continue
+
+                if num_prefill_tokens == 0 and prefill_uses_lm_head:
+                    continue
+
+                configs.append(
+                    (num_prefill_tokens, num_decode_tokens, prefill_uses_lm_head)
+                )
 
     # sort configs by biggest first (and then tie-break prioritizing decode),
     # so we can discover OOMs as soon as possible
@@ -452,11 +455,12 @@ def run_warmup_batches(
 
     inputs: list[ModelInput] = []
 
-    for num_prefill_tokens, num_decode_tokens in configs:
+    for num_prefill_tokens, num_decode_tokens, prefill_uses_lm_head in configs:
         inp = make_dummy_batch(
-            config,
-            num_prefill_tokens,
-            num_decode_tokens,
+            config=config,
+            prefill_tokens=num_prefill_tokens,
+            decode_tokens=num_decode_tokens,
+            prefill_uses_lm_head=prefill_uses_lm_head,
             skip_pipeline_communication=True,
         )
         inputs.append(inp)
@@ -514,6 +518,8 @@ class CUDAGraphInfo:
     def __post_init__(self):
         self.pp_rank = self.model.extra_config.pp_rank
         self.pp_size = self.model.extra_config.pp_size
+        self.tp_rank = self.model.extra_config.tp_rank
+        self.tp_size = self.model.extra_config.tp_size
 
     def copy_into_input_batch_state(
         self, new_input_batch_state: BatchState, non_blocking: bool = False
@@ -525,10 +531,9 @@ class CUDAGraphInfo:
             assert src is not None
             assert dst is not None
 
-            if src.shape[0] > dst.shape[0]:
-                raise ValueError(
-                    f"src.shape[0]={src.shape[0]} > dst.shape[0]={dst.shape[0]}"
-                )
+            assert src.shape[0] <= dst.shape[0], (
+                f"src.shape[0]={src.shape[0]} > dst.shape[0]={dst.shape[0]}"
+            )
             dst[: src.shape[0]].copy_(src, non_blocking=non_blocking)
 
         copy_into(
@@ -536,9 +541,10 @@ class CUDAGraphInfo:
             self.input_batch_state.position_ids,
         )
 
-        # this is the only tensor that actually affects the state of our model
+        # the append indices is the only tensor that actually affects the state of our model
         # we point unused indices (i.e. padding) to the dummy last page we've added
         # to the graph to avoid overwriting stuff we care about.
+
         self.input_batch_state.attention_info.append_kv_token_indices.fill_(
             self.config.kv_cache_num_blocks() * self.config.page_size
         )
@@ -551,8 +557,25 @@ class CUDAGraphInfo:
             copy_into(new_input_batch_state.input_ids, self.input_batch_state.input_ids)
 
         if pp_rank == pp_size - 1:
+            assert self.input_batch_state.lm_head_indices is not None
+            assert new_input_batch_state.lm_head_indices is not None
+
+            num_lm_head_padding = (
+                self.input_batch_state.lm_head_indices.shape[0]
+                - new_input_batch_state.lm_head_indices.shape[0]
+            )
+            assert num_lm_head_padding >= 0
+            num_indices_per_device = new_input_batch_state.lm_head_indices.shape[0]
+            lm_head_index_devices = (
+                new_input_batch_state.lm_head_indices // num_indices_per_device
+            )
+            lm_head_index_padding_offsets = lm_head_index_devices * num_lm_head_padding
+            lm_head_indices_with_padding = (
+                new_input_batch_state.lm_head_indices + lm_head_index_padding_offsets
+            )
+
             copy_into(
-                new_input_batch_state.lm_head_indices,
+                lm_head_indices_with_padding,
                 self.input_batch_state.lm_head_indices,
             )
 
@@ -583,24 +606,13 @@ class CUDAGraphInfo:
         non_blocking: bool = False,
     ):
         assert input_batch_state.attention_info.hydragen_info is None
-        batch_size = input_batch_state.position_ids.shape[0]
 
         self.copy_into_input_batch_state(input_batch_state, non_blocking)
         self.graph.replay()
 
-        if self.pp_rank == self.pp_size - 1:
-            assert self.output_batch_state.output_ids is not None
-            assert self.output_batch_state.logprobs is not None
-
-            input_batch_state.output_ids = self.output_batch_state.output_ids[
-                :batch_size
-            ]
-            input_batch_state.logprobs = self.output_batch_state.logprobs[:batch_size]
-
-        assert self.output_batch_state.hidden_states is not None
-        input_batch_state.hidden_states = self.output_batch_state.hidden_states[
-            :batch_size
-        ]
+        input_batch_state.output_ids = self.output_batch_state.output_ids
+        input_batch_state.logprobs = self.output_batch_state.logprobs
+        input_batch_state.hidden_states = self.output_batch_state.hidden_states
 
         return input_batch_state
 
@@ -732,6 +744,7 @@ class ModelRunner:
         self.model.set_wrappers(self.default_wrappers)
 
         set_async_tp_enabled(use_async_tp)
+
         output_batch_state: BatchState = self.model(
             input_batch_state, async_tp=use_async_tp
         )
@@ -747,10 +760,7 @@ class ModelRunner:
         self.model.set_wrappers(self.default_wrappers)
         self.model.plan(input_batch_state.attention_info, non_blocking=non_blocking)
 
-    def match_to_graph(self, input_batch_state: BatchState):
-        num_prefill_tokens = input_batch_state.attention_info.prefill_info.num_tokens
-        num_decode_tokens = input_batch_state.attention_info.decode_info.num_tokens
-
+    def match_to_graph(self, num_prefill_tokens: int, num_decode_tokens: int):
         if (
             num_prefill_tokens > 0
             or num_decode_tokens > self.config.cudagraph_max_size
@@ -767,9 +777,50 @@ class ModelRunner:
 
         raise RuntimeError(f"Shouldn't get here, num_decode_tokens={num_decode_tokens}")
 
+    def match_state_to_graph(self, input_batch_state: BatchState):
+        num_prefill_tokens = input_batch_state.attention_info.prefill_info.num_tokens
+        num_decode_tokens = input_batch_state.attention_info.decode_info.num_tokens
+        return self.match_to_graph(num_prefill_tokens, num_decode_tokens)
+
+    def calc_padding(
+        self, num_prefill_tokens: int, num_decode_tokens: int, num_lm_head_tokens: int
+    ):
+        """
+        returns (all_tokens_padding, lm_head_tokens_padding)
+        """
+        matched_graph_index = self.match_to_graph(num_prefill_tokens, num_decode_tokens)
+
+        if matched_graph_index is not None:
+            # cudagraph padding
+            assert num_prefill_tokens == 0
+            assert num_lm_head_tokens == num_decode_tokens
+
+            graph_size = self.graphs[matched_graph_index].num_decode_tokens
+            assert graph_size % self.config.tp_size == 0
+
+            decode_padding = graph_size - num_decode_tokens
+
+            return decode_padding, decode_padding
+        else:
+            # normal TP padding
+            num_total_tokens = num_prefill_tokens + num_decode_tokens
+
+            padded_num_total_tokens = (
+                math.ceil(num_total_tokens / self.config.tp_size) * self.config.tp_size
+            )
+            total_padding = padded_num_total_tokens - num_total_tokens
+
+            padded_num_lm_head_tokens = (
+                math.ceil(num_lm_head_tokens / self.config.tp_size)
+                * self.config.tp_size
+            )
+            lm_head_indices_padding = padded_num_lm_head_tokens - num_lm_head_tokens
+
+            return total_padding, lm_head_indices_padding
+
     @torch.inference_mode()
     def plan(self, input_batch_state: BatchState, non_blocking: bool = False):
-        graph_index = self.match_to_graph(input_batch_state)
+        graph_index = self.match_state_to_graph(input_batch_state)
         if graph_index is None:
             self.plan_default(input_batch_state, non_blocking)
             return
@@ -786,7 +837,7 @@ class ModelRunner:
         input_batch_state: BatchState,
         non_blocking: bool = False,
     ):
-        graph_index = self.match_to_graph(input_batch_state)
+        graph_index = self.match_state_to_graph(input_batch_state)
         if graph_index is None:
             return self.run_default(input_batch_state)
 
@@ -861,10 +912,12 @@ def setup_and_run_loop(
 
 def unpad_output_batch_state(
     output_batch_state: BatchState,
-    input_batch_state: BatchState,
+    model_input: ModelInput,
 ):
-    if (lm_padding := input_batch_state.lm_head_indices_padding) > 0:
-        assert output_batch_state.output_ids is not None
-        assert output_batch_state.logprobs is not None
-        output_batch_state.output_ids = output_batch_state.output_ids[:-lm_padding]
-        output_batch_state.logprobs = output_batch_state.logprobs[:-lm_padding]
+    assert output_batch_state.output_ids is not None
+    assert output_batch_state.logprobs is not None
+
+    num_lm_head_tokens = model_input.num_lm_head_tokens()
+
+    output_batch_state.output_ids = output_batch_state.output_ids[:num_lm_head_tokens]
+    output_batch_state.logprobs = output_batch_state.logprobs[:num_lm_head_tokens]

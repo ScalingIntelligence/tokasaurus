@@ -70,11 +70,18 @@ def basic_model_loop(
             dtype=torch.long,
         )
 
+        num_total_padding, num_lm_head_padding = model_runner.calc_padding(
+            num_prefill_tokens=inp.num_prefill_tokens(),
+            num_decode_tokens=inp.num_decode_tokens(),
+            num_lm_head_tokens=inp.num_lm_head_tokens(),
+        )
+
         input_batch_state = make_input_batch_state(
             inp,
             tp_rank=tp_rank,
             tp_size=tp_size,
-            add_raw_lm_head_indices=tp_size > 1,
+            num_total_padding=num_total_padding,
+            num_lm_head_padding=num_lm_head_padding,
         )
 
         model_runner.plan(input_batch_state, non_blocking=non_blocking)
@@ -112,10 +119,10 @@ def basic_model_loop(
 
         unpad_output_batch_state(
             output_batch_state=output_batch_state,
-            input_batch_state=input_batch_state,
+            model_input=work.model_input,
         )
 
-        if tp_size > 1:
+        if input_batch_state.raw_lm_head_indices is not None:
             lm_head_indices = input_batch_state.raw_lm_head_indices
         else:
             lm_head_indices = input_batch_state.lm_head_indices

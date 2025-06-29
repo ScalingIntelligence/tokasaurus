@@ -365,6 +365,15 @@ class ModelInput:
     microbatch_total: int | None = None
     skip_pipeline_communication: bool = False
 
+    def num_prefill_tokens(self):
+        return len(self.prefill_input_ids)
+
+    def num_decode_tokens(self):
+        return len(self.batch_indices) - self.num_prefill_tokens()
+
+    def num_lm_head_tokens(self):
+        return len(self.lm_head_indices)
+
     def lm_head_batch_indices(self):
         return [self.batch_indices[x] for x in self.lm_head_indices]
 
@@ -411,7 +420,8 @@ class BatchState:
     hidden_states: Tensor | None = None
     logprobs: Tensor | None = None
     position_embeddings: tuple[Tensor, Tensor] | None = None
-    lm_head_indices_padding: int = 0
+    num_total_padding: int = 0
+    num_lm_head_padding: int = 0
     # the unpadded/unsliced lm_head_indices, for use in updating
     # the most-recently-generated tokens map.
     raw_lm_head_indices: Tensor | None = None

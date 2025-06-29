@@ -602,9 +602,11 @@ class LlamaForCausalLM(nn.Module):
         async_tp: bool = False,
     ):
         self.async_tp = async_tp
-        # making a copy of the input state - needed for cudagraphs + pp,
+
+        # making a copy of the input state - needed when combining cudagraphs + pp,
         # where we need to keep track of references to both the input
         # and output hidden states.
+
         out = BatchState(
             input_ids=batch_state.input_ids,
             attention_info=batch_state.attention_info,
@@ -643,13 +645,16 @@ class LlamaForCausalLM(nn.Module):
                     dtype=self.dtype,
                 )
 
+    def set_attention_info(self, attn_info: AttentionInfo):
+        for layer in self.model.modules():
+            if isinstance(layer, LlamaAttention):
+                layer.attention_info = attn_info
+
     def plan(self, attn_info: AttentionInfo, non_blocking: bool = False):
         wrappers = self.wrapper_collection
         assert wrappers is not None
 
-        for layer in self.model.modules():
-            if isinstance(layer, LlamaAttention):
-                layer.attention_info = attn_info
+        self.set_attention_info(attn_info)
 
         head_dim = self.config.hidden_size // self.config.num_attention_heads
 
@@ -836,7 +841,7 @@ class LlamaForCausalLM(nn.Module):
 
     def load_from_hf_pretrained(
         self,
-        model_name_or_path: str,
+        model_name_or_path: str | Path,
         device: DeviceType | None = None,
         dtype: torch.dtype | None = None,
     ):
