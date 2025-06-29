@@ -1,4 +1,4 @@
-transformers==4.48.3
+transformers
 pydra-config>=0.0.10
 accelerate
 art
