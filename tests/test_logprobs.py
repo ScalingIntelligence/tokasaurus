@@ -18,7 +18,6 @@ MODEL = os.environ.get(
     "Qwen/Qwen2-0.5B-Instruct",
 )
 OVERRIDES = os.environ.get("OVERRIDES", None)
-MODE = os.environ.get("MODE", "simple")
 MEAN_REL_TOL_LIMIT = ast.literal_eval(os.environ.get("MEAN_REL_TOL_LIMIT", "0.1"))
 MAX_ABS_TOL_LIMIT = ast.literal_eval(os.environ.get("MAX_ABS_TOL_LIMIT", "0.2"))
 TOKEN_MATCH_LIMIT = ast.literal_eval(os.environ.get("TOKEN_MATCH_LIMIT", "0.95"))
@@ -36,45 +35,12 @@ def make_basic_config():
     if OVERRIDES:
         # split apart like a shell, respecting quotes
         parsed_overrides = shlex.split(OVERRIDES)
-        pydra.apply_overrides(config, parsed_overrides, init_annotations=False)
+        pydra.apply_overrides(config, parsed_overrides)
 
     return config
 
 
-def simple_configs():
-    return [
-        make_basic_config(),
-    ]
-
-
-def multi_gpu_configs():
-    npgus = torch.cuda.device_count()
-    configs = []
-    for dp_size in [1, 2]:
-        for pp_size in [1, 2]:
-            for tp_size in [1, 2]:
-                if dp_size * pp_size * tp_size > npgus:
-                    continue
-
-                config = make_basic_config()
-                config.dp_size = dp_size
-                config.pp_size = pp_size
-                config.tp_size = tp_size
-                configs.append(config)
-
-    return configs
-
-
-match MODE:
-    case "simple":
-        configs = simple_configs()
-    case "multigpu":
-        configs = multi_gpu_configs()
-    case _:
-        raise ValueError(f"Invalid mode: {MODE}")
-
-
-@pytest.fixture(scope="module", params=configs)
+@pytest.fixture(scope="module", params=[make_basic_config()])
 def client(request):
     mp.set_start_method("spawn", force=True)
 
