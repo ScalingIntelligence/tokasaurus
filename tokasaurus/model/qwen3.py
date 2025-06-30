@@ -1,11 +1,6 @@
-try:
-    from transformers import Qwen3Config
-except ImportError:
-    # Fallback for older transformers versions
-    from transformers import Qwen2Config as Qwen3Config
-
 import torch
 from torch import Tensor, nn
+from transformers import Qwen3Config
 
 from tokasaurus.model.llama import (
     LlamaAttention,
@@ -13,12 +8,14 @@ from tokasaurus.model.llama import (
     LlamaForCausalLM,
     LlamaModel,
     apply_rotary_pos_emb,
+    reduce_scatter,
 )
-from tokasaurus.model.types import AttentionInfo, BatchState
+from tokasaurus.model.types import BatchState
 
 
 class Qwen3RMSNorm(nn.Module):
     """RMSNorm for head dimension (used in q_norm and k_norm)"""
+
     def __init__(self, head_dim: int, eps: float = 1e-6):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(head_dim))
@@ -37,12 +34,11 @@ class Qwen3Attention(LlamaAttention):
 
     def __init__(self, config, layer_idx, extra_config):
         super().__init__(config, layer_idx, extra_config)
-        
+
         # Add query and key normalization as in Qwen3
-        self.q_norm = Qwen3RMSNorm(self.head_dim, config.rms_norm_eps)
-        self.k_norm = Qwen3RMSNorm(self.head_dim, config.rms_norm_eps)
-    
-    @property
+        self.q_norm = Qwen3RMSNorm(self.head_dim(), config.rms_norm_eps)
+        self.k_norm = Qwen3RMSNorm(self.head_dim(), config.rms_norm_eps)
+
     def head_dim(self):
         # Qwen3 uses explicit head_dim in the config, instead of inferring it from hidden_size and num_attention_heads
         return self.config.head_dim
@@ -62,8 +58,10 @@ class Qwen3Attention(LlamaAttention):
         hidden_states = self.input_layernorm(inp)
 
         from tokasaurus.model.llama import all_gather
+
         hidden_states = all_gather(hidden_states, self.extra_config)
         bsz = hidden_states.shape[0]
+        head_dim = self.head_dim()
 
         # Project to query, key, value
         query_proj = self.q_proj(hidden_states)
@@ -73,20 +71,22 @@ class Qwen3Attention(LlamaAttention):
         # In tokasaurus, hidden_states is already 2D: [total_tokens, hidden_size]
         # We need to reshape to [total_tokens, num_heads, head_dim] for normalization
         # then back to [total_tokens, num_heads, head_dim] for attention
-        
-        # Match HuggingFace exactly: q_proj -> view -> q_norm 
+
+        # Match HuggingFace exactly: q_proj -> view -> q_norm
         # Note: In tokasaurus, bsz represents total tokens, not batch size
         # HF uses: query_proj.view(batch_size, seq_len, num_heads, head_dim)
         # We use: query_proj.view(total_tokens, 1, num_heads, head_dim) since each "token" is independent
-        query_states = self.q_norm(query_proj.view(bsz, 1, self.num_attention_heads, self.head_dim))
-        key_states = self.k_norm(key_proj.view(bsz, 1, self.num_kv_heads, self.head_dim))
-        
-        # Flatten back to [total_tokens, num_heads, head_dim] for tokasaurus attention
-        query_states = query_states.view(bsz, self.num_attention_heads, self.head_dim)
-        key_states = key_states.view(bsz, self.num_kv_heads, self.head_dim)
-        value_states = value_proj.view(bsz, self.num_kv_heads, self.head_dim)
+        query_states = self.q_norm(
+            query_proj.view(bsz, 1, self.num_attention_heads, head_dim)
+        )
+        key_states = self.k_norm(key_proj.view(bsz, 1, self.num_kv_heads, head_dim))
 
-        # Store original dtype 
+        # Flatten back to [total_tokens, num_heads, head_dim] for tokasaurus attention
+        query_states = query_states.view(bsz, self.num_attention_heads, head_dim)
+        key_states = key_states.view(bsz, self.num_kv_heads, head_dim)
+        value_states = value_proj.view(bsz, self.num_kv_heads, head_dim)
+
+        # Store original dtype
         dtype = query_states.dtype
 
         cos, sin = batch_state.position_embeddings
@@ -110,7 +110,7 @@ class Qwen3Attention(LlamaAttention):
             self.layer_cache.v_cache,
         ).clone()
 
-        attn_output = raw_attn_output.view(bsz, self.num_attention_heads * self.head_dim)
+        attn_output = raw_attn_output.view(bsz, self.num_attention_heads * head_dim)
 
         # NOTE: The purpose of running prefill tokens through the model is only
         # to populate the kv cache. After this last layer, we don't need to
@@ -124,7 +124,6 @@ class Qwen3Attention(LlamaAttention):
             attn_output = attn_output[batch_state.lm_head_indices]
             residual = residual[batch_state.lm_head_indices]
 
-        from tokasaurus.model.llama import reduce_scatter
         attn_output = reduce_scatter(attn_output, self.extra_config)
 
         output = self.o_proj(attn_output)
@@ -148,19 +147,20 @@ class Qwen3ForCausalLM(LlamaForCausalLM):
     model_cls = Qwen3Model
     config_cls = Qwen3Config
 
-    @property
     def head_dim(self):
         return self.config.head_dim
 
     def make_name_to_hf_name(self):
         """Override to add q_norm and k_norm parameter mappings"""
         name_to_hf_name = super().make_name_to_hf_name()
-        
+
         # Add mappings for q_norm and k_norm in each attention layer
         for layer_idx in range(self.config.num_hidden_layers):
-            name_to_hf_name[f"model.layers.{layer_idx}.self_attn.q_norm.weight"] = \
+            name_to_hf_name[f"model.layers.{layer_idx}.self_attn.q_norm.weight"] = (
                 f"model.layers.{layer_idx}.self_attn.q_norm.weight"
-            name_to_hf_name[f"model.layers.{layer_idx}.self_attn.k_norm.weight"] = \
+            )
+            name_to_hf_name[f"model.layers.{layer_idx}.self_attn.k_norm.weight"] = (
                 f"model.layers.{layer_idx}.self_attn.k_norm.weight"
-        
+            )
+
         return name_to_hf_name
