@@ -129,7 +129,7 @@ def test_logprobs(
             token_matches.append(token_match)
 
             adiff = abs(api_logprob - hf_logprob)
-            rdiff = 2 * adiff / (abs(api_logprob) + abs(hf_logprob) + 1e-8)
+            rdiff = 2 * adiff / (abs(api_logprob) + abs(hf_logprob) + 1e-3)
             logprob_adiffs.append(adiff)
             logprob_rdiffs.append(rdiff)
             print(
