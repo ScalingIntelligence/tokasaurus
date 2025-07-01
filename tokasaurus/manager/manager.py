@@ -89,7 +89,7 @@ def handle_new_server_commands(state: ManagerState):
                         sampling_params=req.sampling_params,
                         stop=req.stop,
                         request=req,
-                        output=output,
+                        req_output=output,
                     )
 
                     state.scheduling_queue.add_queued(seq)
@@ -150,13 +150,25 @@ def handle_output(
     state.num_inflight_batches -= 1
     decision = state.inflight_schedule_decisions.pop(out.schedule_id)
 
-    assert len(decision.seqs_with_tokens_to_return) == len(out.output_tokens)
+    assert len(decision.seqs_with_tokens_to_return) == len(out.tensors.output_ids)
 
-    for seq, decoded_token, logprob in zip(
-        decision.seqs_with_tokens_to_return,
-        out.output_tokens,
-        out.logprobs,
-        strict=True,
+    output_ids = out.tensors.output_ids.tolist()
+    logprobs = out.tensors.chosen_logprobs.tolist()
+
+    if out.tensors.topk_indices is not None:
+        topk_indices = out.tensors.topk_indices.numpy()
+        topk_logprobs = out.tensors.topk_logprobs.numpy()
+    else:
+        topk_indices = None
+        topk_logprobs = None
+
+    for i, (seq, output_id, logprob) in enumerate(
+        zip(
+            decision.seqs_with_tokens_to_return,
+            output_ids,
+            logprobs,
+            strict=True,
+        )
     ):
         sid = seq.id
 
@@ -164,15 +176,23 @@ def handle_output(
         if sid in state.finished_seq_ids or seq in newly_finished_seqs or seq.cancelled:
             continue
 
-        seq.completion_ids.append(decoded_token)
-        seq.logprobs.append(logprob)
+        seq_out = seq.seq_output
+
+        seq_out.completion_ids.append(output_id)
+        seq_out.logprobs.append(logprob)
         seqs_with_outputs.add(seq)
 
-        if len(seq.completion_ids) == seq.completion_total:
+        if topk_indices is not None:
+            seq_out.topk_ids.append(topk_indices[i])
+
+            assert topk_logprobs is not None
+            seq_out.topk_logprobs.append(topk_logprobs[i])
+
+        if len(seq_out.completion_ids) == seq.completion_total:
             assert not state.scheduling_queue.in_decoding(sid)
             # don't need to free blocks here since the scheduler already did it.
             newly_finished_seqs.add(seq)
-        elif not seq.request.ignore_eos and decoded_token in eos_token_ids:
+        elif not seq.request.ignore_eos and output_id in eos_token_ids:
             newly_finished_seqs.add(seq)
 
     state.stats_tracker.add_decision(decision)
@@ -182,7 +202,7 @@ def handle_output(
 def finish_sequences(state: ManagerState, newly_finished_seqs: set[Sequence]):
     for seq in newly_finished_seqs:
         assert seq.request is not None
-        assert seq.output is not None
+        assert seq.req_output is not None
 
         # NOTE: Edge case: if a stop string/token appears near a seq's max_tokens,
         # the scheduler may have already finished and freed blocks. We guard free()
@@ -191,21 +211,19 @@ def finish_sequences(state: ManagerState, newly_finished_seqs: set[Sequence]):
             state.scheduling_queue.remove_decoding(seq.id)
             state.deallocate(seq)
 
-        seq.output.completion_ids.append(seq.completion_ids)
-        seq.output.logprobs.append(seq.logprobs)
+        seq_out = seq.seq_output
 
-        if len(seq.completion_ids) == seq.completion_total:
-            seq.output.finish_reason.append("length")
+        if len(seq_out.completion_ids) == seq.completion_total:
+            seq_out.finish_reason = "length"
         else:
-            seq.output.finish_reason.append("stop")
+            seq_out.finish_reason = "stop"
 
-        assert seq.num_cached_prompt_tokens is not None
-        seq.output.num_cached_prompt_tokens.append(seq.num_cached_prompt_tokens)
+        seq.req_output.sequence_outputs.append(seq_out)
 
         state.finished_seq_ids.add(seq.id)
 
-        if len(seq.output.completion_ids) == seq.request.n:
-            state.q_manager_to_server.put(seq.output)
+        if len(seq.req_output.sequence_outputs) == seq.request.n:
+            state.q_manager_to_server.put(seq.req_output)
             req_id = seq.request.id
             state.req_id_to_seq_ids.pop(req_id)
             state.logger.debug(f"Finished request ({req_id})")
@@ -410,13 +428,13 @@ def soft_allocate(
     # tentative allocation for now - the allocator hasn't truly assigned these blocks yet
     # to the sequence. but the scheduler functions need these seq attributes set.
     seq.kv_indices = cached_block_ids
-    seq.num_cached_prompt_tokens = num_cached_tokens
+    seq.seq_output.num_cached_prompt_tokens = num_cached_tokens
     seq.prompt_scheduled = num_cached_tokens
 
 
 def soft_deallocate(seq: Sequence):
     seq.kv_indices = None
-    seq.num_cached_prompt_tokens = None
+    seq.seq_output.num_cached_prompt_tokens = None
     seq.prompt_scheduled = 0
 
 
@@ -435,7 +453,7 @@ def real_allocate(
     )
 
     seq.kv_indices = kv_indices
-    seq.num_cached_prompt_tokens = num_cached_prompt_tokens
+    seq.seq_output.num_cached_prompt_tokens = num_cached_prompt_tokens
     seq.prompt_scheduled = num_cached_prompt_tokens
 
     assert seq.batch_index is None
@@ -743,7 +761,7 @@ def allocate_tokens_for_decode_bumping_seqs_if_necessary(
         new_seq = Sequence(
             id=new_id,
             request=seq_to_bump.request,
-            output=seq_to_bump.output,
+            req_output=seq_to_bump.req_output,
             completion_total=seq_to_bump.completion_total,
             input_ids=seq_to_bump.input_ids,
             sampling_params=seq_to_bump.sampling_params,
