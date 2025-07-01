@@ -483,16 +483,34 @@ def validate_args(request: ChatCompletionRequest | CompletionsRequest):
             detail="presence_penalty not supported",
         )
 
-    if request.max_tokens is None:
-        raise HTTPException(
-            status_code=400,
-            detail="max_tokens is required",
-        )
+    match request:
+        case ChatCompletionRequest():
+            raw_max_tokens = request.max_tokens
+            raw_max_completion_tokens = request.max_completion_tokens
 
-    if request.max_tokens <= 0:
+            exactly_one_is_set = (raw_max_tokens is None) ^ (
+                raw_max_completion_tokens is None
+            )
+            if not exactly_one_is_set:
+                raise HTTPException(
+                    status_code=400,
+                    detail="exactly one of max_tokens or max_completion_tokens must be set",
+                )
+
+            max_tokens = raw_max_tokens or raw_max_completion_tokens
+        case CompletionsRequest():
+            max_tokens = request.max_tokens
+
+            if max_tokens is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="max_tokens set is required",
+                )
+
+    if max_tokens <= 0:
         raise HTTPException(
             status_code=400,
-            detail="max_tokens must be greater than 0",
+            detail="max tokens must be greater than 0",
         )
 
     match request:
@@ -533,6 +551,7 @@ def process_request(
             )
             input_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
             top_logprobs = request.top_logprobs
+            max_tokens = request.max_completion_tokens or request.max_tokens
         case CompletionsRequest():
             if isinstance(request.prompt, str):
                 input_ids = state.tokenizer(request.prompt)["input_ids"]
@@ -544,13 +563,17 @@ def process_request(
                     detail="Invalid type for prompt",
                 )
             top_logprobs = request.logprobs
+            max_tokens = request.max_tokens
+
+    # we know this from validation
+    assert max_tokens is not None
 
     rid = str(uuid4())
 
     req = TokasaurusRequest(
         id=rid,
         input_ids=input_ids,
-        max_num_tokens=request.max_tokens,
+        max_num_tokens=max_tokens,
         sampling_params=sampling_params,
         stop=get_stop_strings(request),
         n=n,

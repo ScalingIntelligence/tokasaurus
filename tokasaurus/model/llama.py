@@ -113,8 +113,6 @@ class LlamaAttention(nn.Module):
         self.tp_size = extra_config.tp_size or 1
 
         assert config.num_attention_heads % self.tp_size == 0
-        head_dim = config.hidden_size // config.num_attention_heads
-        self.head_dim = head_dim
 
         assert self.config.num_attention_heads % self.tp_size == 0
         assert (
@@ -131,21 +129,21 @@ class LlamaAttention(nn.Module):
 
         self.q_proj = nn.Linear(
             self.config.hidden_size,
-            self.num_attention_heads * head_dim,
+            self.num_attention_heads * self.head_dim(),
             bias=self.qkv_bias,
         )
         self.k_proj = nn.Linear(
             self.config.hidden_size,
-            self.num_kv_heads * head_dim,
+            self.num_kv_heads * self.head_dim(),
             bias=self.qkv_bias,
         )
         self.v_proj = nn.Linear(
             self.config.hidden_size,
-            self.num_kv_heads * head_dim,
+            self.num_kv_heads * self.head_dim(),
             bias=self.qkv_bias,
         )
         self.o_proj = nn.Linear(
-            self.num_attention_heads * head_dim,
+            self.num_attention_heads * self.head_dim(),
             config.hidden_size,
             bias=False,
         )
@@ -156,6 +154,9 @@ class LlamaAttention(nn.Module):
         self.attention_info: AttentionInfo | None = None
 
         self.attn_fn = self.make_attn_fn()
+
+    def head_dim(self):
+        return self.config.hidden_size // self.config.num_attention_heads
 
     def make_attn_fn(self):
         @torch.library.custom_op(
@@ -629,6 +630,9 @@ class LlamaForCausalLM(nn.Module):
         assert all_heads % tp_size == 0
         return all_heads // tp_size
 
+    def head_dim(self):
+        return self.config.hidden_size // self.config.num_attention_heads
+
     def forward(
         self,
         batch_state: BatchState,
@@ -670,7 +674,7 @@ class LlamaForCausalLM(nn.Module):
         for layer in self.model.modules():
             if isinstance(layer, LlamaAttention):
                 layer.layer_cache = LayerKVCache(
-                    head_dim=layer.head_dim,
+                    head_dim=layer.head_dim(),
                     num_kv_heads=layer.num_kv_heads,
                     num_pages=num_pages,
                     page_size=page_size,
@@ -689,8 +693,7 @@ class LlamaForCausalLM(nn.Module):
 
         self.set_attention_info(attn_info)
 
-        head_dim = self.config.hidden_size // self.config.num_attention_heads
-
+        head_dim = self.head_dim()
         num_qo_heads = self.num_qo_heads()
         num_kv_heads = self.num_kv_heads()
 

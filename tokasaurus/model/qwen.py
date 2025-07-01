@@ -23,3 +23,21 @@ class Qwen2Model(LlamaModel):
 class Qwen2ForCausalLM(LlamaForCausalLM):
     model_cls = Qwen2Model
     config_cls = Qwen2Config
+
+    def make_tp_map(self):
+        """
+        Need to add the qkv biases to the tp map.
+        """
+        tp_map = super().make_tp_map()
+        for param_name, _ in self.named_parameters():
+            if any(
+                param_name.endswith(suffix)
+                for suffix in [
+                    "q_proj.bias",
+                    "k_proj.bias",
+                    "v_proj.bias",
+                ]
+            ):
+                tp_map[param_name] = 0
+
+        return tp_map
