@@ -303,8 +303,8 @@ def make_completion_logprobs(
                 detok = inverse_vocab[token_id]
                 top_logprobs[detok] = seq_out.topk_logprobs[i][k]
             top_logprobs_list.append(top_logprobs)
-        else:
-            top_logprobs_list = []
+    else:
+        top_logprobs_list = []
 
     logprobs_obj = Logprobs(
         token_logprobs=seq_out.logprobs,
