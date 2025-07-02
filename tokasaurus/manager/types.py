@@ -1,6 +1,7 @@
 import math
 from dataclasses import dataclass, field
 
+import numpy as np
 import torch.multiprocessing as mp
 from loguru import logger
 from tokenizers import Tokenizer
@@ -11,6 +12,16 @@ from tokasaurus.manager.allocator import BatchIndexAllocator, BlockAllocator
 from tokasaurus.manager.monitoring import StatsTracker
 from tokasaurus.manager.stopping_predictor import EarlyStoppingTracker
 from tokasaurus.server.types import RequestOutput, SamplingParams, TokasaurusRequest
+
+
+@dataclass
+class SequenceOutput:
+    completion_ids: list[int] = field(default_factory=list)
+    logprobs: list[float] = field(default_factory=list)
+    topk_ids: list[np.ndarray] = field(default_factory=list)
+    topk_logprobs: list[np.ndarray] = field(default_factory=list)
+    finish_reason: str | None = None
+    num_cached_prompt_tokens: int | None = None
 
 
 @dataclass
@@ -37,10 +48,7 @@ class Sequence:
     # the tokens/logprobs that have actually come back from the model
     # note that these lists will lag completion_scheduled because we
     # are asynchronously sending work to the model
-    completion_ids: list[int] = field(default_factory=list)
-    logprobs: list[float] = field(default_factory=list)
-
-    num_cached_prompt_tokens: int | None = None
+    seq_output: SequenceOutput = field(default_factory=SequenceOutput)
 
     cancelled: bool = False
 
@@ -48,7 +56,7 @@ class Sequence:
     _expected_completion_length_with_buffer: int | None = None
 
     request: TokasaurusRequest | None = None
-    output: RequestOutput | None = None
+    req_output: RequestOutput | None = None
 
     def __repr__(self):
         return f"Seq(idx={self.id}, pre={self.prompt_scheduled}/{self.prompt_total()}, dec={self.completion_scheduled}/{self.completion_total})"
@@ -114,17 +122,19 @@ class Sequence:
         return math.ceil(kv_tokens_needed / page_size)
 
     def most_recent_completion_ids(self, num_to_return: int):
-        recently_decoded = self.completion_ids[-num_to_return:]
+        recently_decoded = self.seq_output.completion_ids[-num_to_return:]
         return recently_decoded
 
     def num_uncached_prompt_tokens(self):
-        assert self.num_cached_prompt_tokens is not None
-        return self.prompt_total() - self.num_cached_prompt_tokens
+        num_cached = self.seq_output.num_cached_prompt_tokens
+        assert num_cached is not None
+        return self.prompt_total() - num_cached
 
     def num_cached_blocks(self, page_size: int):
-        assert self.num_cached_prompt_tokens is not None
-        assert self.num_cached_prompt_tokens % page_size == 0
-        return self.num_cached_prompt_tokens // page_size
+        num_cached = self.seq_output.num_cached_prompt_tokens
+        assert num_cached is not None
+        assert num_cached % page_size == 0
+        return num_cached // page_size
 
     def cached_blocks(self, page_size: int):
         assert self.kv_indices is not None
@@ -316,7 +326,7 @@ class ManagerState:
 
         # NOTE: the last decoded token is NOT sent back through the model, so we don't
         # generate a KV cache for it (and thus can't prefix cache with it).
-        ids_for_update = seq.input_ids + seq.completion_ids[:-1]
+        ids_for_update = seq.input_ids + seq.seq_output.completion_ids[:-1]
         if seq.prompt_scheduled < seq.prompt_total():
             ids_for_update = ids_for_update[: seq.prompt_scheduled]
 

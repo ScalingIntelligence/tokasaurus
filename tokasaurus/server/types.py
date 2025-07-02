@@ -2,11 +2,14 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, Optional, Union
+from typing import TYPE_CHECKING, Literal, Optional, Union
 
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.file_object import FileObject
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from tokasaurus.manager.types import SequenceOutput
 
 
 def nowstamp():
@@ -108,18 +111,7 @@ class BatchCreationRequest(BaseModel):
 @dataclass
 class RequestOutput:
     id: str
-    completion_ids: list[list[int]] = field(default_factory=list)
-    logprobs: list[list[float]] = field(default_factory=list)
-    finish_reason: list[str] = field(default_factory=list)
-    num_cached_prompt_tokens: list[int] = field(default_factory=list)
-
-    def validate_lengths(self):
-        assert (
-            len(self.completion_ids)
-            == len(self.logprobs)
-            == len(self.finish_reason)
-            == len(self.num_cached_prompt_tokens)
-        )
+    sequence_outputs: list["SequenceOutput"] = field(default_factory=list)
 
 
 @dataclass
@@ -137,6 +129,7 @@ class TokasaurusRequest:
     stop: list[str]
     n: int
     ignore_eos: bool
+    topk_logprobs: int | None = None  # Number of top tokens to return log probs for
     created_timestamp: float = field(default_factory=time.time)
 
 

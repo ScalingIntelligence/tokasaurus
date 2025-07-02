@@ -27,6 +27,7 @@ from tokasaurus.model.types import (
     BatchState,
     DeviceType,
     ExtraModelConfig,
+    ModelOutputTensors,
     WrapperCollection,
 )
 
@@ -377,7 +378,8 @@ def calc_tokens_and_logprobs(
     logits: Tensor,
     temperature: Tensor,
     greedy_mask: Tensor,
-) -> tuple[Tensor, Tensor]:
+    config: ExtraModelConfig,
+):
     augmented_logits = logits
 
     if temperature is not None:
@@ -394,11 +396,31 @@ def calc_tokens_and_logprobs(
         next_token_ids,
     )
 
-    # TODO: because this is all in fp32, I think the numerics are ok here.
-    chosen_probs = probs.gather(dim=-1, index=next_token_ids.unsqueeze(-1)).squeeze(-1)
-    chosen_logprobs = chosen_probs.log()
+    if config.enable_chosen_logprobs:
+        # TODO: because this is all in fp32, I think the numerics are ok here.
+        chosen_probs = probs.gather(dim=-1, index=next_token_ids.unsqueeze(-1)).squeeze(
+            -1
+        )
+        chosen_logprobs = chosen_probs.log()
+    else:
+        chosen_logprobs = None
 
-    return next_token_ids, chosen_logprobs
+    topk = config.topk_logprobs
+    if topk is not None:
+        assert topk > 0
+        topk_probs, topk_indices = torch.topk(probs, k=topk, dim=-1)
+        topk_tokens = topk_indices
+        topk_logprobs = topk_probs.log()
+    else:
+        topk_tokens = None
+        topk_logprobs = None
+
+    return ModelOutputTensors(
+        output_ids=next_token_ids,
+        chosen_logprobs=chosen_logprobs,
+        topk_indices=topk_tokens,
+        topk_logprobs=topk_logprobs,
+    )
 
 
 class LlamaLMHead(nn.Module):
@@ -429,6 +451,10 @@ class LlamaLMHead(nn.Module):
             chosen_logprobs = torch.empty(
                 0, device=hidden_states.device, dtype=torch.float32
             )
+            outputs = ModelOutputTensors(
+                output_ids=next_token_ids,
+                chosen_logprobs=chosen_logprobs,
+            )
         else:
             if self.extra_config.tp_size > 1:
                 hidden_states = all_gather(hidden_states, self.extra_config)
@@ -444,22 +470,37 @@ class LlamaLMHead(nn.Module):
             assert batch_state.sampling_params.temperature is not None
             assert batch_state.sampling_params.greedy_mask is not None
 
-            next_token_ids, chosen_logprobs = calc_tokens_and_logprobs(
+            outputs = calc_tokens_and_logprobs(
                 logits,
                 temperature=batch_state.sampling_params.temperature,
                 greedy_mask=batch_state.sampling_params.greedy_mask,
+                config=self.extra_config,
             )
 
-            if self.tp_size > 1:
-                # TODO: fusion
-                next_token_ids = all_gather(next_token_ids, self.extra_config)
-                chosen_logprobs = all_gather(chosen_logprobs, self.extra_config)
+            # TODO: fuse these small all_gathers into a single op
+            # TODO: with the exception of output_ids, we don't need to all-gather
+            # the other tensors, we can simply gather them to tp rank 0.
+            outputs.output_ids = all_gather(outputs.output_ids, self.extra_config)
+
+            if outputs.chosen_logprobs is not None:
+                outputs.chosen_logprobs = all_gather(
+                    outputs.chosen_logprobs, self.extra_config
+                )
+
+            if outputs.topk_indices is not None:
+                outputs.topk_indices = all_gather(
+                    outputs.topk_indices, self.extra_config
+                )
+
+            if outputs.topk_logprobs is not None:
+                outputs.topk_logprobs = all_gather(
+                    outputs.topk_logprobs, self.extra_config
+                )
 
         # TODO does "last layer hidden states" typically refer to
         # the activations after the lm head's norm? if so we should update
         # the state (that being said, we don't return hidden states for now).
-        batch_state.output_ids = next_token_ids
-        batch_state.logprobs = chosen_logprobs
+        batch_state.outputs = outputs
         return batch_state
 
 
