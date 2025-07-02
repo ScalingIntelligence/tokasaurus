@@ -615,6 +615,7 @@ class CUDAGraphInfo:
         self.graph.replay()
 
         # making a copy since later we sometimes slice the tensors in the object
+        assert self.output_batch_state.outputs is not None
         input_batch_state.outputs = replace(self.output_batch_state.outputs)
         input_batch_state.hidden_states = self.output_batch_state.hidden_states
 
@@ -925,9 +926,11 @@ def unpad_output_batch_state(
     output_batch_state.outputs.output_ids = output_batch_state.outputs.output_ids[
         :num_lm_head_tokens
     ]
-    output_batch_state.outputs.chosen_logprobs = (
-        output_batch_state.outputs.chosen_logprobs[:num_lm_head_tokens]
-    )
+
+    if output_batch_state.outputs.chosen_logprobs is not None:
+        output_batch_state.outputs.chosen_logprobs = (
+            output_batch_state.outputs.chosen_logprobs[:num_lm_head_tokens]
+        )
 
     if output_batch_state.outputs.topk_indices is not None:
         output_batch_state.outputs.topk_indices = (

@@ -433,7 +433,7 @@ def validate_chat_completion_request(
         )
 
     if (top_logprobs := request.top_logprobs) is not None:
-        if request.logprobs is not True:
+        if not request.logprobs:
             raise HTTPException(
                 status_code=400,
                 detail="logprobs must be True if top_logprobs is set",
@@ -445,7 +445,9 @@ def validate_chat_completion_request(
                 detail="top_logprobs must be non-negative",
             )
 
-        if config.max_topk_logprobs is None or top_logprobs > config.max_topk_logprobs:
+        if top_logprobs > 0 and (
+            config.max_topk_logprobs is None or top_logprobs > config.max_topk_logprobs
+        ):
             raise HTTPException(
                 status_code=400,
                 detail=f"top_logprobs={top_logprobs} but engine was configured with max_topk_logprobs={config.max_topk_logprobs}",
@@ -484,7 +486,9 @@ def validate_completions_request(config: ServerConfig, request: CompletionsReque
                 detail=f"logprobs > 0 (={logprobs}) but engine was configured with enable_chosen_logprobs=False",
             )
 
-        if config.max_topk_logprobs is None or logprobs > config.max_topk_logprobs:
+        if logprobs > 0 and (
+            config.max_topk_logprobs is None or logprobs > config.max_topk_logprobs
+        ):
             raise HTTPException(
                 status_code=400,
                 detail=f"logprobs={logprobs} but engine was configured with max_topk_logprobs={config.max_topk_logprobs}",
@@ -654,14 +658,15 @@ def process_chat_completions_output(
             content=completions[i],
         )
 
-        if crequest.logprobs is None:
-            logprobs = None
-        else:
+        if crequest.logprobs:
             logprobs = make_chat_logprobs(
                 crequest=crequest,
                 seq_out=seq_out,
                 inverse_vocab=state.inverse_vocab,
             )
+        else:
+            # if None or False
+            logprobs = None
 
         choice = Choice(
             index=i,

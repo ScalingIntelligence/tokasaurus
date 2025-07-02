@@ -62,7 +62,7 @@ class ServerConfig(pydra.Config):
     hydragen_min_prefix_len: int = 256
 
     enable_chosen_logprobs: bool = True
-    max_topk_logprobs: int | None = None  # Number of top tokens to return log probs for
+    max_topk_logprobs: int | None = None
 
     port: int = 10210
     local_proc_name: str = "server"
