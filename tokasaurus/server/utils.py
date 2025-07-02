@@ -474,16 +474,16 @@ def validate_completions_request(config: ServerConfig, request: CompletionsReque
         )
 
     if (logprobs := request.logprobs) is not None:
+        if not config.enable_chosen_logprobs:
+            raise HTTPException(
+                status_code=400,
+                detail="logprobs is set but engine was configured with enable_chosen_logprobs=False",
+            )
+
         if logprobs < 0:
             raise HTTPException(
                 status_code=400,
                 detail="logprobs must be non-negative",
-            )
-
-        if logprobs > 0 and not config.enable_chosen_logprobs:
-            raise HTTPException(
-                status_code=400,
-                detail=f"logprobs > 0 (={logprobs}) but engine was configured with enable_chosen_logprobs=False",
             )
 
         if logprobs > 0 and (
