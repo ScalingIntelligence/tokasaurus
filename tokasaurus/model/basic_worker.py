@@ -150,11 +150,10 @@ def basic_model_loop(
             return
 
         assert work.output_tensors_cpu is not None
-        model_input = work.model_input
 
         out = ModelOutput(
             tensors=work.output_tensors_cpu,
-            schedule_id=model_input.schedule_id,
+            schedule_id=work.model_input.schedule_id,
         )
 
         state.q_model_to_manager.put(out)

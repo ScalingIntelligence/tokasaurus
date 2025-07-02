@@ -405,7 +405,7 @@ class ModelOutputTensors:
     output_ids: Tensor
 
     # logprobs of the tokens that were chosen
-    chosen_logprobs: Tensor
+    chosen_logprobs: Tensor | None = None
     topk_indices: Tensor | None = None
     topk_logprobs: Tensor | None = None
 
@@ -413,7 +413,9 @@ class ModelOutputTensors:
         return replace(
             self,
             output_ids=self.output_ids.to(device, non_blocking=non_blocking),
-            chosen_logprobs=self.chosen_logprobs.to(device, non_blocking=non_blocking),
+            chosen_logprobs=self.chosen_logprobs.to(device, non_blocking=non_blocking)
+            if self.chosen_logprobs is not None
+            else None,
             topk_indices=self.topk_indices.to(device, non_blocking=non_blocking)
             if self.topk_indices is not None
             else None,
@@ -501,4 +503,6 @@ class ExtraModelConfig:
     torch_compile: bool = False
 
     rope_scaling: dict | None = None
+
+    enable_chosen_logprobs: bool = True
     topk_logprobs: int | None = None

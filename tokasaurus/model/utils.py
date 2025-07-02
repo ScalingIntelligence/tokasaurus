@@ -2,7 +2,7 @@ import json
 import math
 import os
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 import torch.distributed as dist
@@ -346,6 +346,7 @@ def make_model(
         tp_rank=tp_rank,
         tp_group=tp_group,
         torch_compile=config.torch_compile,
+        enable_chosen_logprobs=config.enable_chosen_logprobs,
         topk_logprobs=config.max_topk_logprobs,
     )
 
@@ -613,7 +614,8 @@ class CUDAGraphInfo:
         self.copy_into_input_batch_state(input_batch_state, non_blocking)
         self.graph.replay()
 
-        input_batch_state.outputs = self.output_batch_state.outputs
+        # making a copy since later we sometimes slice the tensors in the object
+        input_batch_state.outputs = replace(self.output_batch_state.outputs)
         input_batch_state.hidden_states = self.output_batch_state.hidden_states
 
         return input_batch_state

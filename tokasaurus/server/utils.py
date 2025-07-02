@@ -285,17 +285,20 @@ def make_usage_info(request: TokasaurusRequest, output: RequestOutput):
 
 
 def make_completion_logprobs(
-    request: TokasaurusRequest,
+    crequest: CompletionsRequest,
     seq_out: SequenceOutput,
     inverse_vocab: dict[int, str],
 ):
     detok_list = [inverse_vocab[cid] for cid in seq_out.completion_ids]
 
-    if request.topk_logprobs is not None:
+    logprobs = crequest.logprobs
+    assert logprobs is not None
+
+    if logprobs > 0:
         top_logprobs_list = []
         for i in range(len(seq_out.completion_ids)):
             top_logprobs = {}
-            for k in range(request.topk_logprobs):
+            for k in range(logprobs):
                 token_id = seq_out.topk_ids[i][k]
                 detok = inverse_vocab[token_id]
                 top_logprobs[detok] = seq_out.topk_logprobs[i][k]
@@ -312,16 +315,18 @@ def make_completion_logprobs(
 
 
 def make_chat_logprobs(
-    request: TokasaurusRequest,
+    crequest: ChatCompletionRequest,
     seq_out: SequenceOutput,
     inverse_vocab: dict[int, str],
 ):
+    topk = crequest.top_logprobs
+
     logprobs_list = []
     for i, cid in enumerate(seq_out.completion_ids):
         detok = inverse_vocab[cid]
         logprob = seq_out.logprobs[i]
 
-        if request.topk_logprobs is not None:
+        if topk is not None and topk > 0:
             # Build top_logprobs if top-k data is available
             top_logprobs_list = []
 
@@ -329,9 +334,9 @@ def make_chat_logprobs(
             topk_logprobs = seq_out.topk_logprobs[i].tolist()
 
             assert len(topk_ids) == len(topk_logprobs)
-            assert len(topk_ids) >= request.topk_logprobs
+            assert len(topk_ids) >= topk
 
-            for k in range(request.topk_logprobs):
+            for k in range(topk):
                 top_token = topk_ids[k]
                 top_logprob = topk_logprobs[k]
 
@@ -418,15 +423,36 @@ def decode_completion(
     return trimmed_list
 
 
-def validate_chat_completion_request(request: ChatCompletionRequest):
-    if request.top_logprobs is not None and request.top_logprobs < 0:
+def validate_chat_completion_request(
+    config: ServerConfig, request: ChatCompletionRequest
+):
+    if request.logprobs and not config.enable_chosen_logprobs:
         raise HTTPException(
             status_code=400,
-            detail="top_logprobs must be non-negative",
+            detail="logprobs is True but engine was configured with enable_chosen_logprobs=False",
         )
 
+    if (top_logprobs := request.top_logprobs) is not None:
+        if request.logprobs is not True:
+            raise HTTPException(
+                status_code=400,
+                detail="logprobs must be True if top_logprobs is set",
+            )
 
-def validate_completions_request(request: CompletionsRequest):
+        if top_logprobs < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="top_logprobs must be non-negative",
+            )
+
+        if config.max_topk_logprobs is None or top_logprobs > config.max_topk_logprobs:
+            raise HTTPException(
+                status_code=400,
+                detail=f"top_logprobs={top_logprobs} but engine was configured with max_topk_logprobs={config.max_topk_logprobs}",
+            )
+
+
+def validate_completions_request(config: ServerConfig, request: CompletionsRequest):
     if request.echo not in [False, None]:
         raise HTTPException(
             status_code=400,
@@ -445,14 +471,29 @@ def validate_completions_request(request: CompletionsRequest):
             detail="suffix not supported",
         )
 
-    if request.logprobs not in [None, 1]:
-        raise HTTPException(
-            status_code=400,
-            detail="logprobs must be 1 or None",
-        )
+    if (logprobs := request.logprobs) is not None:
+        if logprobs < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="logprobs must be non-negative",
+            )
+
+        if logprobs > 0 and not config.enable_chosen_logprobs:
+            raise HTTPException(
+                status_code=400,
+                detail=f"logprobs > 0 (={logprobs}) but engine was configured with enable_chosen_logprobs=False",
+            )
+
+        if config.max_topk_logprobs is None or logprobs > config.max_topk_logprobs:
+            raise HTTPException(
+                status_code=400,
+                detail=f"logprobs={logprobs} but engine was configured with max_topk_logprobs={config.max_topk_logprobs}",
+            )
 
 
-def validate_args(request: ChatCompletionRequest | CompletionsRequest):
+def validate_args(
+    config: ServerConfig, request: ChatCompletionRequest | CompletionsRequest
+):
     if request.stream:
         raise HTTPException(
             status_code=400,
@@ -515,15 +556,15 @@ def validate_args(request: ChatCompletionRequest | CompletionsRequest):
 
     match request:
         case ChatCompletionRequest():
-            validate_chat_completion_request(request)
+            validate_chat_completion_request(config, request)
         case CompletionsRequest():
-            validate_completions_request(request)
+            validate_completions_request(config, request)
 
 
 def process_request(
     state: ServerState, request: ChatCompletionRequest | CompletionsRequest
 ):
-    validate_args(request)
+    validate_args(state.config, request)
 
     if (n := request.n) is None:
         n = 1
@@ -617,7 +658,7 @@ def process_chat_completions_output(
             logprobs = None
         else:
             logprobs = make_chat_logprobs(
-                request=request,
+                crequest=crequest,
                 seq_out=seq_out,
                 inverse_vocab=state.inverse_vocab,
             )
@@ -656,7 +697,7 @@ def process_completions_output(
             logprobs = None
         else:
             logprobs = make_completion_logprobs(
-                request=request,
+                crequest=crequest,
                 seq_out=seq_out,
                 inverse_vocab=state.inverse_vocab,
             )

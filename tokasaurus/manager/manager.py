@@ -150,23 +150,31 @@ def handle_output(
     state.num_inflight_batches -= 1
     decision = state.inflight_schedule_decisions.pop(out.schedule_id)
 
-    assert len(decision.seqs_with_tokens_to_return) == len(out.tensors.output_ids)
+    assert len(decision.seqs_with_tokens_to_return) == len(out.tensors.output_ids), (
+        f"len(decision.seqs_with_tokens_to_return) = {len(decision.seqs_with_tokens_to_return)}, len(out.tensors.output_ids) = {out.tensors.output_ids.shape} out={out} seqs={[s.id for s in decision.seqs_with_tokens_to_return]} decision={decision}"
+    )
 
     output_ids = out.tensors.output_ids.tolist()
-    logprobs = out.tensors.chosen_logprobs.tolist()
+
+    if out.tensors.chosen_logprobs is not None:
+        chosen_logprobs = out.tensors.chosen_logprobs.tolist()
+    else:
+        chosen_logprobs = None
 
     if out.tensors.topk_indices is not None:
         topk_indices = out.tensors.topk_indices.numpy()
-        topk_logprobs = out.tensors.topk_logprobs.numpy()
     else:
         topk_indices = None
+
+    if out.tensors.topk_logprobs is not None:
+        topk_logprobs = out.tensors.topk_logprobs.numpy()
+    else:
         topk_logprobs = None
 
-    for i, (seq, output_id, logprob) in enumerate(
+    for i, (seq, output_id) in enumerate(
         zip(
             decision.seqs_with_tokens_to_return,
             output_ids,
-            logprobs,
             strict=True,
         )
     ):
@@ -179,13 +187,15 @@ def handle_output(
         seq_out = seq.seq_output
 
         seq_out.completion_ids.append(output_id)
-        seq_out.logprobs.append(logprob)
         seqs_with_outputs.add(seq)
+
+        if chosen_logprobs is not None:
+            seq_out.logprobs.append(chosen_logprobs[i])
 
         if topk_indices is not None:
             seq_out.topk_ids.append(topk_indices[i])
 
-            assert topk_logprobs is not None
+        if topk_logprobs is not None:
             seq_out.topk_logprobs.append(topk_logprobs[i])
 
         if len(seq_out.completion_ids) == seq.completion_total:

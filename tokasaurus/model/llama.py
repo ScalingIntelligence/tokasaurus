@@ -396,9 +396,14 @@ def calc_tokens_and_logprobs(
         next_token_ids,
     )
 
-    # TODO: because this is all in fp32, I think the numerics are ok here.
-    chosen_probs = probs.gather(dim=-1, index=next_token_ids.unsqueeze(-1)).squeeze(-1)
-    chosen_logprobs = chosen_probs.log()
+    if config.enable_chosen_logprobs:
+        # TODO: because this is all in fp32, I think the numerics are ok here.
+        chosen_probs = probs.gather(dim=-1, index=next_token_ids.unsqueeze(-1)).squeeze(
+            -1
+        )
+        chosen_logprobs = chosen_probs.log()
+    else:
+        chosen_logprobs = None
 
     topk = config.topk_logprobs
     if topk is not None:
@@ -476,15 +481,18 @@ class LlamaLMHead(nn.Module):
             # TODO: with the exception of output_ids, we don't need to all-gather
             # the other tensors, we can simply gather them to tp rank 0.
             outputs.output_ids = all_gather(outputs.output_ids, self.extra_config)
-            outputs.chosen_logprobs = all_gather(
-                outputs.chosen_logprobs, self.extra_config
-            )
+
+            if outputs.chosen_logprobs is not None:
+                outputs.chosen_logprobs = all_gather(
+                    outputs.chosen_logprobs, self.extra_config
+                )
+
             if outputs.topk_indices is not None:
-                assert outputs.topk_logprobs is not None
                 outputs.topk_indices = all_gather(
                     outputs.topk_indices, self.extra_config
                 )
-                assert outputs.topk_logprobs is not None
+
+            if outputs.topk_logprobs is not None:
                 outputs.topk_logprobs = all_gather(
                     outputs.topk_logprobs, self.extra_config
                 )
