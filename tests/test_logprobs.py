@@ -89,7 +89,7 @@ def test_logprobs(
         ],
         max_tokens=64,
         temperature=0.0,
-        logprobs=1,
+        logprobs=True,
     )
     model, tokenizer = hf_model_and_tokenizer
 
