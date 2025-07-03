@@ -706,7 +706,7 @@ def decompress_logprobs_data(compressed_data: bytes) -> list[tuple[list[list[int
     return result
 
 
-def make_completions_fingerprint(state: ServerState, output: RequestOutput):
+def make_completions_fingerprint(state: ServerState, output: RequestOutput, logprobs_in_fingerprint: bool):
     """
     Sneaky way to send the completion ids to the client
     while adhering to the API spec.
@@ -716,7 +716,7 @@ def make_completions_fingerprint(state: ServerState, output: RequestOutput):
     }
     
     # Add compressed logprobs if enabled and available
-    if (state.config.logprobs_in_fingerprint and 
+    if (logprobs_in_fingerprint and 
         output.sequence_outputs and 
         any(len(seq.topk_ids) > 0 for seq in output.sequence_outputs if seq.topk_ids)):
         try:
@@ -770,7 +770,7 @@ def process_chat_completions_output(
         choices=choices,
         created=nowstamp(),
         object="chat.completion",
-        system_fingerprint=make_completions_fingerprint(state, output),
+        system_fingerprint=make_completions_fingerprint(state, output, logprobs_in_fingerprint=crequest.logprobs_in_fingerprint),
     )
 
 
@@ -785,14 +785,15 @@ def process_completions_output(
     choices = []
     for i in range(request.n):
         seq_out = output.sequence_outputs[i]
-        if crequest.logprobs is None:
-            logprobs = None
-        else:
+   
+        if crequest.logprobs and not crequest.logprobs_in_fingerprint:
             logprobs = make_completion_logprobs(
                 crequest=crequest,
                 seq_out=seq_out,
                 inverse_vocab=state.inverse_vocab,
             )
+        else:
+            logprobs = None
 
         choice = CompletionChoice(
             index=i,
@@ -809,7 +810,7 @@ def process_completions_output(
         choices=choices,
         created=nowstamp(),
         object="text_completion",
-        system_fingerprint=make_completions_fingerprint(state, output),
+        system_fingerprint=make_completions_fingerprint(state, output, logprobs_in_fingerprint=crequest.logprobs_in_fingerprint),
     )
 
 

@@ -352,5 +352,6 @@ def test_fingerprint_vs_regular_logprobs_comparison(client: OpenAI):
         
         # Compare logprob values (allowing for small floating point differences)
         for j, regular_top in enumerate(regular_token.top_logprobs):
+            breakpoint()
             fingerprint_logprob = fingerprint_token_logprobs[j]
             assert abs(regular_top.logprob - fingerprint_logprob) < 1e-2
