@@ -63,7 +63,6 @@ class ServerConfig(pydra.Config):
 
     enable_chosen_logprobs: bool = True
     max_topk_logprobs: int | None = None
-    logprobs_in_fingerprint: bool = False
 
     port: int = 10210
     local_proc_name: str = "server"

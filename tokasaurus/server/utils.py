@@ -745,7 +745,7 @@ def process_chat_completions_output(
             content=completions[i],
         )
 
-        if crequest.logprobs and not state.config.logprobs_in_fingerprint:
+        if crequest.logprobs and not crequest.logprobs_in_fingerprint:
             logprobs = make_chat_logprobs(
                 crequest=crequest,
                 seq_out=seq_out,

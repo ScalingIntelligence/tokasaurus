@@ -43,6 +43,9 @@ class CompletionsRequest(BaseModel):
     user: Optional[str] = None
     metadata: Optional[dict] = None
 
+    # pack the logprobs into the fingerprint in a more space-efficient way
+    logprobs_in_fingerprint: bool = False
+
     # extra fields to get sglang benchmarking script to work
     ignore_eos: bool = False
 
@@ -85,6 +88,9 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 1.0
     user: Optional[str] = None
     metadata: Optional[dict] = None
+
+    # pack the logprobs into the fingerprint in a more space-efficient way
+    logprobs_in_fingerprint: bool = False
 
     # extra fields to get sglang benchmarking script to work
     ignore_eos: bool = False

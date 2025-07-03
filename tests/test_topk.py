@@ -14,7 +14,7 @@ MODEL = os.environ.get("MODEL", "meta-llama/Llama-3.2-1B-Instruct")
 OVERRIDES = os.environ.get("OVERRIDES", None)
 
 
-def make_config(fingerprint: bool = False):
+def make_config():
     config = ServerConfig()
     config.model = MODEL
     config.kv_cache_num_tokens = 16384
@@ -30,15 +30,14 @@ def make_config(fingerprint: bool = False):
     # Enable logprobs features for topk testing
     config.enable_chosen_logprobs = True
     config.max_topk_logprobs = 5
-    config.logprobs_in_fingerprint = fingerprint
 
     return config
 
 
-def _client(fingerprint: bool = False):
+def _client():
     mp.set_start_method("spawn", force=True)
 
-    config = make_config(fingerprint=fingerprint)
+    config = make_config()
     print(f"Launching server with config: {config.to_dict()}")
 
     with server_manager(config):
@@ -49,11 +48,7 @@ def _client(fingerprint: bool = False):
 
 @pytest.fixture(scope="module")
 def client():
-    yield from _client(fingerprint=False)
-
-@pytest.fixture(scope="module")
-def client_fingerprint():
-    yield from _client(fingerprint=True)
+    yield from _client()
 
 
 
@@ -244,20 +239,21 @@ def test_logprobs_compression_multiple_sequences():
     assert abs(logprobs3[1][2] - (-8.0)) < 1e-2
 
 
-def test_logprobs_in_fingerprint_end_to_end(client_fingerprint: OpenAI):
+def test_logprobs_in_fingerprint_end_to_end(client: OpenAI):
     """Test that logprobs_in_fingerprint=True produces compressed data that matches regular logprobs"""
     import json
     import base64
     from tokasaurus.server.utils import decompress_logprobs_data
     
     # Make a request with logprobs enabled
-    response = client_fingerprint.chat.completions.create(
+    response = client.chat.completions.create(
         model="",
         messages=[{"role": "user", "content": "Hello"}],
         max_tokens=5,
         temperature=0.0,
         logprobs=True,
         top_logprobs=3,
+        extra_body=dict(logprobs_in_fingerprint=True),
     )
     
     assert len(response.choices) == 1
@@ -305,7 +301,7 @@ def test_logprobs_in_fingerprint_end_to_end(client_fingerprint: OpenAI):
             assert logprob <= 0.0  # log probabilities should be <= 0
 
 
-def test_fingerprint_vs_regular_logprobs_comparison(client: OpenAI, client_fingerprint: OpenAI):
+def test_fingerprint_vs_regular_logprobs_comparison(client: OpenAI):
     """Compare regular logprobs vs fingerprint logprobs to ensure they match"""
     import json
     from tokasaurus.server.utils import decompress_logprobs_data
@@ -323,13 +319,14 @@ def test_fingerprint_vs_regular_logprobs_comparison(client: OpenAI, client_finge
     )
     
     # Get fingerprint logprobs response
-    fingerprint_response = client_fingerprint.chat.completions.create(
+    fingerprint_response = client.chat.completions.create(
         model="",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=3,
         temperature=0.0,
         logprobs=True,
         top_logprobs=5,  # Use max configured value
+        extra_body=dict(logprobs_in_fingerprint=True),
     )
     
     # Extract regular logprobs
