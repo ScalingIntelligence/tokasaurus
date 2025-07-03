@@ -588,11 +588,17 @@ def process_request(
         case ChatCompletionRequest():
             messages = request.messages
             ends_with_user = messages[-1]["role"] == "user"
+            apply_chat_template_kwargs = {
+                "tokenize": False,
+                "add_generation_prompt": ends_with_user,
+                "continue_final_message": not ends_with_user,
+            }
+
+            if (overrides := request.apply_chat_template_overrides) is not None:
+                apply_chat_template_kwargs.update(overrides)
+
             prompt = state.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=ends_with_user,
-                continue_final_message=not ends_with_user,
+                messages, **apply_chat_template_kwargs
             )
             input_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
             top_logprobs = request.top_logprobs
