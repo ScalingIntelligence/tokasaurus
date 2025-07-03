@@ -88,6 +88,10 @@ class ChatCompletionRequest(BaseModel):
 
     # extra fields to get sglang benchmarking script to work
     ignore_eos: bool = False
+    
+    # extra field for Qwen models apply_chat_template: https://huggingface.co/Qwen/Qwen3-32B 
+    enable_thinking: Optional[bool] = None
+    
 
     class Config:
         extra = "forbid"

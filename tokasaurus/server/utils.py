@@ -588,12 +588,14 @@ def process_request(
         case ChatCompletionRequest():
             messages = request.messages
             ends_with_user = messages[-1]["role"] == "user"
-            prompt = state.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=ends_with_user,
-                continue_final_message=not ends_with_user,
-            )
+            template_kwargs = {
+                "tokenize": False,
+                "add_generation_prompt": ends_with_user,
+                "continue_final_message": not ends_with_user,
+            }
+            if request.enable_thinking is not None:
+                template_kwargs["enable_thinking"] = request.enable_thinking
+            prompt = state.tokenizer.apply_chat_template(messages, **template_kwargs)
             input_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
             top_logprobs = request.top_logprobs
             max_tokens = request.max_completion_tokens or request.max_tokens
