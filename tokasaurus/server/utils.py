@@ -2,7 +2,6 @@ import asyncio
 import base64
 import functools
 import json
-import zlib
 from dataclasses import dataclass, field
 from uuid import uuid4
 
@@ -637,9 +636,9 @@ def process_request(
 
 def compress_logprobs_data(sequence_outputs: list["SequenceOutput"]) -> bytes:
     """
-    Compress topk logprobs data as a list of sequence dicts with base64-encoded numpy arrays.
+    Store topk logprobs data as a list of sequence dicts with base64-encoded numpy arrays.
     
-    Format: List of sequence dicts, each containing base64-encoded numpy arrays per token
+    Format: List of sequence dicts, each containing single numpy arrays for all tokens
     """
     sequences = []
     
@@ -647,30 +646,27 @@ def compress_logprobs_data(sequence_outputs: list["SequenceOutput"]) -> bytes:
         if not seq_out.topk_ids or not seq_out.topk_logprobs:
             # Empty sequence
             sequences.append({
-                "tokens": []
+                "topk_ids": "",
+                "topk_logprobs": "",
+                "num_tokens": 0,
+                "topk_size": 0
             })
             continue
             
-        tokens = []
-        for i in range(len(seq_out.topk_ids)):
-            # Convert to numpy arrays and encode as base64
-            ids_array = np.asarray(seq_out.topk_ids[i], dtype=np.int32)
-            logprobs_array = np.asarray(seq_out.topk_logprobs[i], dtype=np.float32)
-            
-            tokens.append({
-                "topk_ids": base64.b64encode(ids_array.tobytes()).decode('ascii'),
-                "topk_logprobs": base64.b64encode(logprobs_array.tobytes()).decode('ascii'),
-                "shape": len(ids_array)
-            })
+        # Stack all tokens into single arrays
+        all_ids = np.array(seq_out.topk_ids, dtype=np.int32)
+        all_logprobs = np.array(seq_out.topk_logprobs, dtype=np.float16)
         
         sequences.append({
-            "tokens": tokens
+            "topk_ids": base64.b64encode(all_ids.tobytes()).decode('ascii'),
+            "topk_logprobs": base64.b64encode(all_logprobs.tobytes()).decode('ascii'),
+            "num_tokens": len(seq_out.topk_ids),
+            "topk_size": len(seq_out.topk_ids[0]) if seq_out.topk_ids else 0
         })
     
-    # Serialize to JSON, compress, and encode
+    # Serialize to JSON and encode
     json_bytes = json.dumps(sequences).encode('utf-8')
-    compressed = zlib.compress(json_bytes)
-    return base64.b64encode(compressed)
+    return base64.b64encode(json_bytes)
 
 
 def decompress_logprobs_data(compressed_data: bytes) -> list[tuple[list[list[int]], list[list[float]]]]:
@@ -679,36 +675,31 @@ def decompress_logprobs_data(compressed_data: bytes) -> list[tuple[list[list[int
     
     Returns: List of (topk_ids, topk_logprobs) tuples for each sequence
     """
-    # Decode, decompress, and parse JSON
-    compressed = base64.b64decode(compressed_data)
-    json_bytes = zlib.decompress(compressed)
+    # Decode and parse JSON
+    json_bytes = base64.b64decode(compressed_data)
     sequences = json.loads(json_bytes.decode('utf-8'))
     
     result = []
     
     for seq_data in sequences:
-        if not seq_data["tokens"]:
+        if seq_data["num_tokens"] == 0:
             # Empty sequence
             result.append(([], []))
             continue
             
-        topk_ids = []
-        topk_logprobs = []
+        # Decode base64 and reconstruct numpy arrays
+        ids_bytes = base64.b64decode(seq_data["topk_ids"])
+        logprobs_bytes = base64.b64decode(seq_data["topk_logprobs"])
         
-        for token_data in seq_data["tokens"]:
-            # Decode base64 and reconstruct numpy arrays
-            ids_bytes = base64.b64decode(token_data["topk_ids"])
-            logprobs_bytes = base64.b64decode(token_data["topk_logprobs"])
-            shape = token_data["shape"]
-            
-            ids_array = np.frombuffer(ids_bytes, dtype=np.int32)
-            logprobs_array = np.frombuffer(logprobs_bytes, dtype=np.float32)
-            
-            # Verify shape consistency
-            assert len(ids_array) == shape == len(logprobs_array)
-            
-            topk_ids.append(ids_array.tolist())
-            topk_logprobs.append(logprobs_array.tolist())
+        num_tokens = seq_data["num_tokens"]
+        topk_size = seq_data["topk_size"]
+        
+        ids_array = np.frombuffer(ids_bytes, dtype=np.int32).reshape(num_tokens, topk_size)
+        logprobs_array = np.frombuffer(logprobs_bytes, dtype=np.float16).reshape(num_tokens, topk_size)
+        
+        # Convert back to lists
+        topk_ids = ids_array.tolist()
+        topk_logprobs = logprobs_array.tolist()
         
         result.append((topk_ids, topk_logprobs))
     

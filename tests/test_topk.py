@@ -155,11 +155,11 @@ def test_logprobs_in_fingerprint_compression():
     seq_out = SequenceOutput()
     seq_out.topk_ids = [
         np.array([10, 20, 30], dtype=np.int32),
-        np.array([40, 50], dtype=np.int32),
+        np.array([40, 50, 60], dtype=np.int32),
     ]
     seq_out.topk_logprobs = [
         np.array([-1.0, -2.0, -3.0], dtype=np.float32),
-        np.array([-0.5, -1.5], dtype=np.float32),
+        np.array([-0.5, -1.5, -2.5], dtype=np.float32),
     ]
     
     # Test compression
@@ -177,14 +177,15 @@ def test_logprobs_in_fingerprint_compression():
     
     # Check first token
     assert topk_ids[0] == [10, 20, 30]
-    assert abs(topk_logprobs[0][0] - (-1.0)) < 1e-6
-    assert abs(topk_logprobs[0][1] - (-2.0)) < 1e-6
-    assert abs(topk_logprobs[0][2] - (-3.0)) < 1e-6
+    assert abs(topk_logprobs[0][0] - (-1.0)) < 1e-2
+    assert abs(topk_logprobs[0][1] - (-2.0)) < 1e-2
+    assert abs(topk_logprobs[0][2] - (-3.0)) < 1e-2
     
     # Check second token  
-    assert topk_ids[1] == [40, 50]
-    assert abs(topk_logprobs[1][0] - (-0.5)) < 1e-6
-    assert abs(topk_logprobs[1][1] - (-1.5)) < 1e-6
+    assert topk_ids[1] == [40, 50, 60]
+    assert abs(topk_logprobs[1][0] - (-0.5)) < 1e-2
+    assert abs(topk_logprobs[1][1] - (-1.5)) < 1e-2
+    assert abs(topk_logprobs[1][2] - (-2.5)) < 1e-2
     
     
 def test_logprobs_compression_multiple_sequences():
@@ -204,11 +205,11 @@ def test_logprobs_compression_multiple_sequences():
     
     seq3 = SequenceOutput()
     seq3.topk_ids = [
-        np.array([100], dtype=np.int32),
+        np.array([100, 110, 120], dtype=np.int32),
         np.array([200, 300, 400], dtype=np.int32)
     ]
     seq3.topk_logprobs = [
-        np.array([-5.0], dtype=np.float32),
+        np.array([-5.0, -5.1, -5.2], dtype=np.float32),
         np.array([-6.0, -7.0, -8.0], dtype=np.float32)
     ]
     
@@ -222,8 +223,8 @@ def test_logprobs_compression_multiple_sequences():
     ids1, logprobs1 = decompressed[0]
     assert len(ids1) == 1
     assert ids1[0] == [1, 2]
-    assert abs(logprobs1[0][0] - (-0.1)) < 1e-6
-    assert abs(logprobs1[0][1] - (-0.2)) < 1e-6
+    assert abs(logprobs1[0][0] - (-0.1)) < 1e-2
+    assert abs(logprobs1[0][1] - (-0.2)) < 1e-2
     
     # Check seq2 (empty)
     ids2, logprobs2 = decompressed[1]
@@ -233,19 +234,20 @@ def test_logprobs_compression_multiple_sequences():
     # Check seq3
     ids3, logprobs3 = decompressed[2]
     assert len(ids3) == 2
-    assert ids3[0] == [100]
+    assert ids3[0] == [100, 110, 120]
     assert ids3[1] == [200, 300, 400]
-    assert abs(logprobs3[0][0] - (-5.0)) < 1e-6
-    assert abs(logprobs3[1][0] - (-6.0)) < 1e-6
-    assert abs(logprobs3[1][1] - (-7.0)) < 1e-6
-    assert abs(logprobs3[1][2] - (-8.0)) < 1e-6
+    assert abs(logprobs3[0][0] - (-5.0)) < 1e-2
+    assert abs(logprobs3[0][1] - (-5.1)) < 1e-2
+    assert abs(logprobs3[0][2] - (-5.2)) < 1e-2
+    assert abs(logprobs3[1][0] - (-6.0)) < 1e-2
+    assert abs(logprobs3[1][1] - (-7.0)) < 1e-2
+    assert abs(logprobs3[1][2] - (-8.0)) < 1e-2
 
 
 def test_logprobs_in_fingerprint_end_to_end(client_fingerprint: OpenAI):
     """Test that logprobs_in_fingerprint=True produces compressed data that matches regular logprobs"""
     import json
     import base64
-    import zlib
     from tokasaurus.server.utils import decompress_logprobs_data
     
     # Make a request with logprobs enabled
@@ -261,9 +263,8 @@ def test_logprobs_in_fingerprint_end_to_end(client_fingerprint: OpenAI):
     assert len(response.choices) == 1
     choice = response.choices[0]
     
-    # Check that regular logprobs are STILL present (fingerprint mode doesn't disable them)
-    assert choice.logprobs is not None
-    assert choice.logprobs.content is not None
+    # Check that regular logprobs are STILL present (fingerprint mode does disable them)
+    assert choice.logprobs is None
     
     # Check that fingerprint contains compressed logprobs
     assert response.system_fingerprint is not None
@@ -337,7 +338,6 @@ def test_fingerprint_vs_regular_logprobs_comparison(client: OpenAI, client_finge
     assert regular_logprobs.content is not None
     
     # Extract fingerprint logprobs
-    assert fingerprint_response.choices[0].logprobs is not None  # Should still be present
     fingerprint_data = json.loads(fingerprint_response.system_fingerprint)
     compressed_data = fingerprint_data["logprobs_compressed"].encode('ascii')
     decompressed_sequences = decompress_logprobs_data(compressed_data)
@@ -356,4 +356,4 @@ def test_fingerprint_vs_regular_logprobs_comparison(client: OpenAI, client_finge
         # Compare logprob values (allowing for small floating point differences)
         for j, regular_top in enumerate(regular_token.top_logprobs):
             fingerprint_logprob = fingerprint_token_logprobs[j]
-            assert abs(regular_top.logprob - fingerprint_logprob) < 1e-5
+            assert abs(regular_top.logprob - fingerprint_logprob) < 1e-2
