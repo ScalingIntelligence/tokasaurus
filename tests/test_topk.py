@@ -134,3 +134,99 @@ def test_chat_completions_greedy_logprobs_matches_top1(client: OpenAI):
 
         # The top-1 logprob should match the token logprob
         assert abs(top_logprobs[0].logprob - token_logprob.logprob) < 1e-6
+
+
+def test_logprobs_in_fingerprint_compression():
+    """Test the compression/decompression functions directly"""
+    import numpy as np
+    from tokasaurus.manager.types import SequenceOutput
+    from tokasaurus.server.utils import compress_logprobs_data, decompress_logprobs_data
+    
+    # Create mock sequence output with topk data
+    seq_out = SequenceOutput()
+    seq_out.topk_ids = [
+        np.array([10, 20, 30], dtype=np.int32),
+        np.array([40, 50], dtype=np.int32),
+    ]
+    seq_out.topk_logprobs = [
+        np.array([-1.0, -2.0, -3.0], dtype=np.float32),
+        np.array([-0.5, -1.5], dtype=np.float32),
+    ]
+    
+    # Test compression
+    compressed_data = compress_logprobs_data([seq_out])
+    assert isinstance(compressed_data, bytes)
+    assert len(compressed_data) > 0
+    
+    # Test decompression
+    decompressed = decompress_logprobs_data(compressed_data)
+    assert len(decompressed) == 1
+    
+    topk_ids, topk_logprobs = decompressed[0]
+    assert len(topk_ids) == 2
+    assert len(topk_logprobs) == 2
+    
+    # Check first token
+    assert topk_ids[0] == [10, 20, 30]
+    assert abs(topk_logprobs[0][0] - (-1.0)) < 1e-6
+    assert abs(topk_logprobs[0][1] - (-2.0)) < 1e-6
+    assert abs(topk_logprobs[0][2] - (-3.0)) < 1e-6
+    
+    # Check second token  
+    assert topk_ids[1] == [40, 50]
+    assert abs(topk_logprobs[1][0] - (-0.5)) < 1e-6
+    assert abs(topk_logprobs[1][1] - (-1.5)) < 1e-6
+    
+    
+def test_logprobs_compression_multiple_sequences():
+    """Test compression with multiple sequences including empty ones"""
+    import numpy as np
+    from tokasaurus.manager.types import SequenceOutput
+    from tokasaurus.server.utils import compress_logprobs_data, decompress_logprobs_data
+    
+    # Create multiple sequence outputs
+    seq1 = SequenceOutput()
+    seq1.topk_ids = [np.array([1, 2], dtype=np.int32)]
+    seq1.topk_logprobs = [np.array([-0.1, -0.2], dtype=np.float32)]
+    
+    seq2 = SequenceOutput()  # Empty sequence
+    seq2.topk_ids = []
+    seq2.topk_logprobs = []
+    
+    seq3 = SequenceOutput()
+    seq3.topk_ids = [
+        np.array([100], dtype=np.int32),
+        np.array([200, 300, 400], dtype=np.int32)
+    ]
+    seq3.topk_logprobs = [
+        np.array([-5.0], dtype=np.float32),
+        np.array([-6.0, -7.0, -8.0], dtype=np.float32)
+    ]
+    
+    # Test compression and decompression
+    compressed = compress_logprobs_data([seq1, seq2, seq3])
+    decompressed = decompress_logprobs_data(compressed)
+    
+    assert len(decompressed) == 3
+    
+    # Check seq1
+    ids1, logprobs1 = decompressed[0]
+    assert len(ids1) == 1
+    assert ids1[0] == [1, 2]
+    assert abs(logprobs1[0][0] - (-0.1)) < 1e-6
+    assert abs(logprobs1[0][1] - (-0.2)) < 1e-6
+    
+    # Check seq2 (empty)
+    ids2, logprobs2 = decompressed[1]
+    assert len(ids2) == 0
+    assert len(logprobs2) == 0
+    
+    # Check seq3
+    ids3, logprobs3 = decompressed[2]
+    assert len(ids3) == 2
+    assert ids3[0] == [100]
+    assert ids3[1] == [200, 300, 400]
+    assert abs(logprobs3[0][0] - (-5.0)) < 1e-6
+    assert abs(logprobs3[1][0] - (-6.0)) < 1e-6
+    assert abs(logprobs3[1][1] - (-7.0)) < 1e-6
+    assert abs(logprobs3[1][2] - (-8.0)) < 1e-6

@@ -1,8 +1,12 @@
 import asyncio
+import base64
 import functools
 import json
+import zlib
 from dataclasses import dataclass, field
 from uuid import uuid4
+
+import numpy as np
 
 from fastapi import HTTPException, Request
 from loguru import logger
@@ -631,7 +635,87 @@ def process_request(
     return req
 
 
-def make_completions_fingerprint(output: RequestOutput):
+def compress_logprobs_data(sequence_outputs: list["SequenceOutput"]) -> bytes:
+    """
+    Compress topk logprobs data as a list of sequence dicts with base64-encoded numpy arrays.
+    
+    Format: List of sequence dicts, each containing base64-encoded numpy arrays per token
+    """
+    sequences = []
+    
+    for seq_out in sequence_outputs:
+        if not seq_out.topk_ids or not seq_out.topk_logprobs:
+            # Empty sequence
+            sequences.append({
+                "tokens": []
+            })
+            continue
+            
+        tokens = []
+        for i in range(len(seq_out.topk_ids)):
+            # Convert to numpy arrays and encode as base64
+            ids_array = np.asarray(seq_out.topk_ids[i], dtype=np.int32)
+            logprobs_array = np.asarray(seq_out.topk_logprobs[i], dtype=np.float32)
+            
+            tokens.append({
+                "topk_ids": base64.b64encode(ids_array.tobytes()).decode('ascii'),
+                "topk_logprobs": base64.b64encode(logprobs_array.tobytes()).decode('ascii'),
+                "shape": len(ids_array)
+            })
+        
+        sequences.append({
+            "tokens": tokens
+        })
+    
+    # Serialize to JSON, compress, and encode
+    json_bytes = json.dumps(sequences).encode('utf-8')
+    compressed = zlib.compress(json_bytes)
+    return base64.b64encode(compressed)
+
+
+def decompress_logprobs_data(compressed_data: bytes) -> list[tuple[list[list[int]], list[list[float]]]]:
+    """
+    Decompress logprobs data back to topk_ids and topk_logprobs lists.
+    
+    Returns: List of (topk_ids, topk_logprobs) tuples for each sequence
+    """
+    # Decode, decompress, and parse JSON
+    compressed = base64.b64decode(compressed_data)
+    json_bytes = zlib.decompress(compressed)
+    sequences = json.loads(json_bytes.decode('utf-8'))
+    
+    result = []
+    
+    for seq_data in sequences:
+        if not seq_data["tokens"]:
+            # Empty sequence
+            result.append(([], []))
+            continue
+            
+        topk_ids = []
+        topk_logprobs = []
+        
+        for token_data in seq_data["tokens"]:
+            # Decode base64 and reconstruct numpy arrays
+            ids_bytes = base64.b64decode(token_data["topk_ids"])
+            logprobs_bytes = base64.b64decode(token_data["topk_logprobs"])
+            shape = token_data["shape"]
+            
+            ids_array = np.frombuffer(ids_bytes, dtype=np.int32)
+            logprobs_array = np.frombuffer(logprobs_bytes, dtype=np.float32)
+            
+            # Verify shape consistency
+            assert len(ids_array) == shape == len(logprobs_array)
+            
+            topk_ids.append(ids_array.tolist())
+            topk_logprobs.append(logprobs_array.tolist())
+        
+        result.append((topk_ids, topk_logprobs))
+    
+    return result
+
+
+def make_completions_fingerprint(state: ServerState, output: RequestOutput):
     """
     Sneaky way to send the completion ids to the client
     while adhering to the API spec.
@@ -639,6 +723,18 @@ def make_completions_fingerprint(output: RequestOutput):
     obj = {
         "completion_ids": [o.completion_ids for o in output.sequence_outputs],
     }
+    
+    # Add compressed logprobs if enabled and available
+    if (state.config.logprobs_in_fingerprint and 
+        output.sequence_outputs and 
+        any(len(seq.topk_ids) > 0 for seq in output.sequence_outputs if seq.topk_ids)):
+        try:
+            compressed_logprobs = compress_logprobs_data(output.sequence_outputs)
+            obj["logprobs_compressed"] = compressed_logprobs.decode('ascii')
+        except Exception as e:
+            # Log error but don't fail the request
+            state.logger.warning(f"Failed to compress logprobs for fingerprint: {e}")
+    
     return json.dumps(obj)
 
 
@@ -658,7 +754,7 @@ def process_chat_completions_output(
             content=completions[i],
         )
 
-        if crequest.logprobs:
+        if crequest.logprobs and not state.config.logprobs_in_fingerprint:
             logprobs = make_chat_logprobs(
                 crequest=crequest,
                 seq_out=seq_out,
@@ -683,7 +779,7 @@ def process_chat_completions_output(
         choices=choices,
         created=nowstamp(),
         object="chat.completion",
-        system_fingerprint=make_completions_fingerprint(output),
+        system_fingerprint=make_completions_fingerprint(state, output),
     )
 
 
@@ -722,7 +818,7 @@ def process_completions_output(
         choices=choices,
         created=nowstamp(),
         object="text_completion",
-        system_fingerprint=make_completions_fingerprint(output),
+        system_fingerprint=make_completions_fingerprint(state, output),
     )
 
 
