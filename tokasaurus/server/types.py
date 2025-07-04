@@ -2,11 +2,14 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, Optional, Union
+from typing import TYPE_CHECKING, Literal, Optional, Union
 
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.file_object import FileObject
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from tokasaurus.manager.types import SequenceOutput
 
 
 def nowstamp():
@@ -47,6 +50,9 @@ class CompletionsRequest(BaseModel):
     user: Optional[str] = None
     metadata: Optional[dict] = None
 
+    # pack the logprobs into the fingerprint in a more space-efficient way
+    logprobs_in_fingerprint: bool = False
+
     # extra fields to get sglang benchmarking script to work
     ignore_eos: bool = False
 
@@ -54,39 +60,9 @@ class CompletionsRequest(BaseModel):
         extra = "forbid"
 
 
-class CartridgeCompletionsRequest(BaseModel):
-    # Similar to CompletionsRequest but with cartridge support
-    # Based on official OpenAI API documentation with Tokasaurus extensions
-    # https://platform.openai.com/docs/api-reference/completions/create
-    model: str
-    prompt: Union[list[int], list[list[int]], str, list[str]]
-    best_of: Optional[int] = None
-    echo: Optional[bool] = False
-    frequency_penalty: Optional[float] = 0.0
-    logit_bias: Optional[dict[str, float]] = None
-    logprobs: Optional[int] = None
-    max_tokens: Optional[int] = 16
-    n: int = 1
-    presence_penalty: Optional[float] = 0.0
-    seed: Optional[int] = None
-    stop: Optional[Union[str, list[str]]] = Field(default_factory=list)
-    stream: Optional[bool] = False
-    stream_options: Optional[StreamOptions] = None
-    suffix: Optional[str] = None
-    temperature: Optional[float] = 1.0
-    top_p: Optional[float] = 1.0
-    user: Optional[str] = None
-    metadata: Optional[dict] = None
-
-    # extra fields to get sglang benchmarking script to work
-    ignore_eos: bool = False
-
+class CartridgeCompletionsRequest(CompletionsRequest):
     # Tokasaurus-specific fields
     cartridges: Optional[list[Cartridge]] = None
-
-    class Config:
-        extra = "forbid"
-
 
 class JsonSchemaResponseFormat(BaseModel):
     name: str
@@ -111,6 +87,7 @@ class ChatCompletionRequest(BaseModel):
     logprobs: Optional[bool] = False
     top_logprobs: Optional[int] = None
     max_tokens: Optional[int] = None
+    max_completion_tokens: Optional[int] = None
     n: Optional[int] = 1
     presence_penalty: Optional[float] = 0.0
     response_format: Optional[ResponseFormat] = None
@@ -123,44 +100,27 @@ class ChatCompletionRequest(BaseModel):
     user: Optional[str] = None
     metadata: Optional[dict] = None
 
-    # extra fields to get sglang benchmarking script to work
+
+    # extra fields ---
+
+    # needed for sglang benchmarking script
     ignore_eos: bool = False
+
+    # pack the logprobs into the fingerprint in a more space-efficient way
+    logprobs_in_fingerprint: bool = False
+
+    # extra chat template args, e.g. to pass enable_thinking for Qwen3 models: https://huggingface.co/Qwen/Qwen3-32B
+    apply_chat_template_overrides: Optional[dict[str, object]] = None
 
     class Config:
         extra = "forbid"
 
 
-class CartridgeChatCompletionRequest(BaseModel):
-    # Similar to ChatCompletionRequest but with cartridge support
-    # Based on official OpenAI API documentation with Tokasaurus extensions
-    # https://platform.openai.com/docs/api-reference/chat/create
-    messages: list[ChatCompletionMessageParam]
-    model: str
-    frequency_penalty: Optional[float] = 0.0
-    logit_bias: Optional[dict[str, float]] = None
-    logprobs: Optional[bool] = False
-    top_logprobs: Optional[int] = None
-    max_tokens: Optional[int] = None
-    n: Optional[int] = 1
-    presence_penalty: Optional[float] = 0.0
-    response_format: Optional[ResponseFormat] = None
-    seed: Optional[int] = None
-    stop: Optional[Union[str, list[str]]] = Field(default_factory=list)
-    stream: Optional[bool] = False
-    stream_options: Optional[StreamOptions] = None
-    temperature: Optional[float] = 0.7
-    top_p: Optional[float] = 1.0
-    user: Optional[str] = None
-    metadata: Optional[dict] = None
-
-    # extra fields to get sglang benchmarking script to work
-    ignore_eos: bool = False
+class CartridgeChatCompletionRequest(ChatCompletionRequest):
 
     # Tokasaurus-specific fields
     cartridges: Optional[list[Cartridge]] = None
 
-    class Config:
-        extra = "forbid"
 
 
 class BatchCreationRequest(BaseModel):
@@ -181,19 +141,8 @@ class BatchCreationRequest(BaseModel):
 @dataclass
 class RequestOutput:
     id: str
-    completion_ids: list[list[int]] = field(default_factory=list)
-    logprobs: list[list[float]] = field(default_factory=list)
-    finish_reason: list[str] = field(default_factory=list)
-    num_cached_prompt_tokens: list[int] = field(default_factory=list)
+    sequence_outputs: list["SequenceOutput"] = field(default_factory=list)
     error_message: Optional[str] = None
-
-    def validate_lengths(self):
-        assert (
-            len(self.completion_ids)
-            == len(self.logprobs)
-            == len(self.finish_reason)
-            == len(self.num_cached_prompt_tokens)
-        )
 
 
 @dataclass
@@ -212,6 +161,7 @@ class TokasaurusRequest:
     n: int
     ignore_eos: bool
     cartridges: Optional[list[Cartridge]] = None
+    topk_logprobs: int | None = None  # Number of top tokens to return log probs for
     created_timestamp: float = field(default_factory=time.time)
 
 

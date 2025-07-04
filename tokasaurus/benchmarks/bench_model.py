@@ -271,6 +271,7 @@ def main(config: ScriptConfig):
         and server_config.tp_size > 1
         and batch_size >= server_config.async_tp_threshold
     )
+    print(f"use_async_tp: {use_async_tp}")
     set_async_tp_enabled(use_async_tp)
 
     def go():

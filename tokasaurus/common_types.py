@@ -61,6 +61,9 @@ class ServerConfig(pydra.Config):
     hydragen_min_group_size: int = 32
     hydragen_min_prefix_len: int = 256
 
+    enable_chosen_logprobs: bool = True
+    max_topk_logprobs: int | None = None
+
     port: int = 10210
     local_proc_name: str = "server"
 

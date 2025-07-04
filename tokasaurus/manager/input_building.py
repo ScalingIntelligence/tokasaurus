@@ -15,6 +15,7 @@ def make_dummy_batch(
     config: ServerConfig,
     prefill_tokens: int,
     decode_tokens: int,
+    prefill_uses_lm_head: bool = False,
     skip_pipeline_communication: bool = False,
 ):
     total_tokens = prefill_tokens + decode_tokens
@@ -44,6 +45,12 @@ def make_dummy_batch(
             )
         )
 
+        if prefill_uses_lm_head:
+            sampling_builder.add_sequence(
+                temperature=0.5,
+                top_p=1.0,
+            )
+
     for _ in range(decode_tokens):
         decode_builder.add_sequence(
             kv_indices=[0],
@@ -72,11 +79,18 @@ def make_dummy_batch(
         hydragen_builder=None,
     )
 
+    # includes prefill lm head tokens and decode tokens
+    if prefill_uses_lm_head:
+        assert prefill_tokens > 0
+        lm_head_indices = list(range(prefill_tokens - 1, total_tokens))
+    else:
+        lm_head_indices = list(range(prefill_tokens, total_tokens))
+
     inp = ModelInput(
         attention_info_builder=attention_info_builder,
         prefill_input_ids=[0] * prefill_tokens,
         batch_indices=[0] * total_tokens,
-        lm_head_indices=list(range(prefill_tokens, total_tokens)),
+        lm_head_indices=lm_head_indices,
         sampling_builder=sampling_builder,
         position_ids=[0] * total_tokens,
         schedule_id="dummy_batch",

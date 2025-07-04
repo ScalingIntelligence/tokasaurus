@@ -18,6 +18,7 @@ from tokasaurus.model.types import (
     LoadCartridge,
     ModelInput,
     ModelOutput,
+    ModelOutputTensors,
     NoMoreInputs,
 )
 from tokasaurus.model.utils import (
@@ -56,8 +57,7 @@ def basic_model_loop(
         input_batch_state: BatchState
         batch_indices: Tensor
         output_batch_state: BatchState | None = None
-        output_tokens_cpu: Tensor | None = None
-        logprobs_cpu: Tensor | None = None
+        output_tensors_cpu: ModelOutputTensors | None = None
 
     def preprocess():
         while True:  # Loop until we get a command that requires model processing
@@ -88,11 +88,18 @@ def basic_model_loop(
             dtype=torch.long,
         )
 
+        num_total_padding, num_lm_head_padding = model_runner.calc_padding(
+            num_prefill_tokens=inp.num_prefill_tokens(),
+            num_decode_tokens=inp.num_decode_tokens(),
+            num_lm_head_tokens=inp.num_lm_head_tokens(),
+        )
+
         input_batch_state = make_input_batch_state(
             inp,
             tp_rank=tp_rank,
             tp_size=tp_size,
-            add_raw_lm_head_indices=tp_size > 1,
+            num_total_padding=num_total_padding,
+            num_lm_head_padding=num_lm_head_padding,
         )
 
         model_runner.plan(input_batch_state, non_blocking=non_blocking)
@@ -130,10 +137,10 @@ def basic_model_loop(
 
         unpad_output_batch_state(
             output_batch_state=output_batch_state,
-            input_batch_state=input_batch_state,
+            model_input=work.model_input,
         )
 
-        if tp_size > 1:
+        if input_batch_state.raw_lm_head_indices is not None:
             lm_head_indices = input_batch_state.raw_lm_head_indices
         else:
             lm_head_indices = input_batch_state.lm_head_indices
@@ -142,9 +149,9 @@ def basic_model_loop(
         batch_indices = work.batch_indices[lm_head_indices]
 
         if len(batch_indices) > 0:
-            assert output_batch_state.output_ids is not None
+            assert output_batch_state.outputs is not None
             state.batch_index_to_last_token[batch_indices] = (
-                output_batch_state.output_ids
+                output_batch_state.outputs.output_ids
             )
 
         work.output_batch_state = output_batch_state
@@ -154,21 +161,17 @@ def basic_model_loop(
         # but omitting it causes sporadic nccl illegal memory access errors
         torch.cuda.synchronize()
 
-        work.output_tokens_cpu = work.output_batch_state.output_ids.cpu()
-        work.logprobs_cpu = work.output_batch_state.logprobs.cpu()
+        work.output_tensors_cpu = work.output_batch_state.outputs.to("cpu")
 
     def postprocess(work: Work):
         if state.tp_rank != 0:
             return
 
-        assert work.output_tokens_cpu is not None
-        assert work.logprobs_cpu is not None
+        assert work.output_tensors_cpu is not None
 
-        model_input = work.model_input
         out = ModelOutput(
-            output_tokens=work.output_tokens_cpu.tolist(),
-            logprobs=work.logprobs_cpu.tolist(),
-            schedule_id=model_input.schedule_id,
+            tensors=work.output_tensors_cpu,
+            schedule_id=work.model_input.schedule_id,
         )
 
         state.q_model_to_manager.put(out)
