@@ -595,11 +595,6 @@ def validate_args(config: ServerConfig, request: ChatCompletionRequest | Complet
             validate_chat_completion_request(config, request)
         case CompletionsRequest():
             validate_completions_request(config, request)
-        case CartridgeCompletionsRequest():
-            validate_completions_request(config, request)  # reuse validation since fields are similar
-        case CartridgeChatCompletionRequest():
-            validate_chat_completion_request(config, request)
-
 
 def process_request(
     state: ServerState, request: ChatCompletionRequest | CompletionsRequest | CartridgeCompletionsRequest | CartridgeChatCompletionRequest
@@ -632,12 +627,17 @@ def process_request(
 
             if (overrides := request.apply_chat_template_overrides) is not None:
                 apply_chat_template_kwargs.update(overrides)
+            
+            if isinstance(request, CartridgeChatCompletionRequest):
+                cartridges = request.cartridges
+                apply_chat_template_kwargs["chat_template"] = CARTRIDGE_TEMPLATE
+            else:
+                cartridges = None
 
             prompt = state.tokenizer.apply_chat_template(
                 messages, **apply_chat_template_kwargs
             )
             input_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
-            cartridges = None
             top_logprobs = request.top_logprobs
             max_tokens = request.max_completion_tokens or request.max_tokens
         case CompletionsRequest():
@@ -650,38 +650,10 @@ def process_request(
                     status_code=400,
                     detail="Invalid type for prompt",
                 )
-            cartridges = None
-            top_logprobs = request.logprobs
-            max_tokens = request.max_tokens
-        case CartridgeCompletionsRequest():
-            if isinstance(request.prompt, str):
-                input_ids = state.tokenizer(request.prompt)["input_ids"]
-            elif is_ids_list(request.prompt):
-                input_ids = request.prompt
+            if isinstance(request, CartridgeCompletionsRequest):
+                cartridges = request.cartridges
             else:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid type for prompt",
-                )
-            cartridges = request.cartridges
-            top_logprobs = request.logprobs
-            max_tokens = request.max_tokens
-        case CartridgeChatCompletionRequest():
-            messages = request.messages
-            ends_with_user = messages[-1]["role"] == "user"
-            prompt = state.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                # set to `ends_with_user` to get same behavior as capsules/generation.py... 
-                # this matches training eval behavior
-                add_generation_prompt=False,  
-                # set to `not ends_with_user` to get same behavior as capsules/generation.py... 
-                # this matches training eval behavior
-                continue_final_message=False, 
-                chat_template=CARTRIDGE_TEMPLATE
-            )
-            input_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
-            cartridges = request.cartridges
+                cartridges = None
             top_logprobs = request.logprobs
             max_tokens = request.max_tokens
 
