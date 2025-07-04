@@ -1,6 +1,9 @@
+import base64
+import json
 import os
 import shlex
 
+import numpy as np
 import pydra
 import pytest
 import torch.multiprocessing as mp
@@ -46,10 +49,10 @@ def _client():
         )
         yield client
 
+
 @pytest.fixture(scope="module")
 def client():
     yield from _client()
-
 
 
 # Test prompts
@@ -140,217 +143,88 @@ def test_chat_completions_greedy_logprobs_matches_top1(client: OpenAI):
         assert abs(top_logprobs[0].logprob - token_logprob.logprob) < 1e-6
 
 
-def test_logprobs_in_fingerprint_compression():
-    """Test the compression/decompression functions directly"""
-    import numpy as np
-    from tokasaurus.manager.types import SequenceOutput
-    from tokasaurus.server.utils import pack_logprobs_data, unpack_logprobs_data
-    
-    # Create mock sequence output with topk data
-    seq_out = SequenceOutput()
-    seq_out.topk_ids = [
-        np.array([10, 20, 30], dtype=np.int32),
-        np.array([40, 50, 60], dtype=np.int32),
-    ]
-    seq_out.topk_logprobs = [
-        np.array([-1.0, -2.0, -3.0], dtype=np.float32),
-        np.array([-0.5, -1.5, -2.5], dtype=np.float32),
-    ]
-    
-    # Test compression
-    compressed_data = pack_logprobs_data([seq_out])
-    assert isinstance(compressed_data, bytes)
-    assert len(compressed_data) > 0
-    
-    # Test decompression
-    decompressed = unpack_logprobs_data(compressed_data)
-    assert len(decompressed) == 1
-    
-    topk_ids, topk_logprobs = decompressed[0]
-    assert len(topk_ids) == 2
-    assert len(topk_logprobs) == 2
-    
-    # Check first token
-    assert topk_ids[0] == [10, 20, 30]
-    assert abs(topk_logprobs[0][0] - (-1.0)) < 1e-2
-    assert abs(topk_logprobs[0][1] - (-2.0)) < 1e-2
-    assert abs(topk_logprobs[0][2] - (-3.0)) < 1e-2
-    
-    # Check second token  
-    assert topk_ids[1] == [40, 50, 60]
-    assert abs(topk_logprobs[1][0] - (-0.5)) < 1e-2
-    assert abs(topk_logprobs[1][1] - (-1.5)) < 1e-2
-    assert abs(topk_logprobs[1][2] - (-2.5)) < 1e-2
-    
-    
-def test_logprobs_compression_multiple_sequences():
-    """Test compression with multiple sequences including empty ones"""
-    import numpy as np
-    from tokasaurus.manager.types import SequenceOutput
-    from tokasaurus.server.utils import pack_logprobs_data, unpack_logprobs_data
-    
-    # Create multiple sequence outputs
-    seq1 = SequenceOutput()
-    seq1.topk_ids = [np.array([1, 2], dtype=np.int32)]
-    seq1.topk_logprobs = [np.array([-0.1, -0.2], dtype=np.float32)]
-    
-    seq2 = SequenceOutput()  # Empty sequence
-    seq2.topk_ids = []
-    seq2.topk_logprobs = []
-    
-    seq3 = SequenceOutput()
-    seq3.topk_ids = [
-        np.array([100, 110, 120], dtype=np.int32),
-        np.array([200, 300, 400], dtype=np.int32)
-    ]
-    seq3.topk_logprobs = [
-        np.array([-5.0, -5.1, -5.2], dtype=np.float32),
-        np.array([-6.0, -7.0, -8.0], dtype=np.float32)
-    ]
-    
-    # Test compression and decompression
-    compressed = pack_logprobs_data([seq1, seq2, seq3])
-    decompressed = unpack_logprobs_data(compressed)
-    
-    assert len(decompressed) == 3
-    
-    # Check seq1
-    ids1, logprobs1 = decompressed[0]
-    assert len(ids1) == 1
-    assert ids1[0] == [1, 2]
-    assert abs(logprobs1[0][0] - (-0.1)) < 1e-2
-    assert abs(logprobs1[0][1] - (-0.2)) < 1e-2
-    
-    # Check seq2 (empty)
-    ids2, logprobs2 = decompressed[1]
-    assert len(ids2) == 0
-    assert len(logprobs2) == 0
-    
-    # Check seq3
-    ids3, logprobs3 = decompressed[2]
-    assert len(ids3) == 2
-    assert ids3[0] == [100, 110, 120]
-    assert ids3[1] == [200, 300, 400]
-    assert abs(logprobs3[0][0] - (-5.0)) < 1e-2
-    assert abs(logprobs3[0][1] - (-5.1)) < 1e-2
-    assert abs(logprobs3[0][2] - (-5.2)) < 1e-2
-    assert abs(logprobs3[1][0] - (-6.0)) < 1e-2
-    assert abs(logprobs3[1][1] - (-7.0)) < 1e-2
-    assert abs(logprobs3[1][2] - (-8.0)) < 1e-2
+def test_packed_vs_normal_logprobs(client: OpenAI):
+    """Test that packed format and normal OpenAI format produce identical results for the same request"""
 
+    # Use a simple prompt and greedy decoding for deterministic results
+    prompt = "What is the capital of France?"
+    k = 3  # Number of top logprobs to request
+    max_tokens = 10
 
-def test_logprobs_in_fingerprint_end_to_end(client: OpenAI):
-    """Test that logprobs_in_fingerprint=True produces compressed data that matches regular logprobs"""
-    import json
-    import base64
-    from tokasaurus.server.utils import unpack_logprobs_data
-    
-    # Make a request with logprobs enabled
-    response = client.chat.completions.create(
-        model="",
-        messages=[{"role": "user", "content": "Hello"}],
-        max_tokens=5,
-        temperature=0.0,
-        logprobs=True,
-        top_logprobs=3,
-        extra_body=dict(logprobs_in_fingerprint=True),
-    )
-    
-    assert len(response.choices) == 1
-    choice = response.choices[0]
-    
-    # Check that regular logprobs are STILL present (fingerprint mode does disable them)
-    assert choice.logprobs is None
-    
-    # Check that fingerprint contains compressed logprobs
-    assert response.system_fingerprint is not None
-    fingerprint_data = json.loads(response.system_fingerprint)
-    assert "completion_ids" in fingerprint_data
-    assert "logprobs_packed" in fingerprint_data
-    
-    # Decompress the logprobs data
-    compressed_data = fingerprint_data["logprobs_packed"].encode('ascii')
-    decompressed_sequences = unpack_logprobs_data(compressed_data)
-    
-    # Should have one sequence (n=1)
-    assert len(decompressed_sequences) == 1
-    topk_ids, topk_logprobs = decompressed_sequences[0]
-    
-    # Should have the expected number of tokens (up to max_tokens=5)
-    assert len(topk_ids) <= 5
-    assert len(topk_logprobs) <= 5
-    assert len(topk_ids) == len(topk_logprobs)
-    
-    # Each token should have up to max_topk_logprobs=5 (configured limit)
-    for i, (token_ids, token_logprobs) in enumerate(zip(topk_ids, topk_logprobs)):
-        assert len(token_ids) <= 5
-        assert len(token_logprobs) <= 5
-        assert len(token_ids) == len(token_logprobs)
-        
-        # Verify logprobs are in descending order
-        assert token_logprobs == sorted(token_logprobs, reverse=True)
-        
-        # Verify token IDs are positive integers
-        for token_id in token_ids:
-            assert isinstance(token_id, int)
-            assert token_id >= 0
-        
-        # Verify logprobs are negative floats (since they're log probabilities)
-        for logprob in token_logprobs:
-            assert isinstance(logprob, float)
-            assert logprob <= 0.0  # log probabilities should be <= 0
-
-
-def test_fingerprint_vs_regular_logprobs_comparison(client: OpenAI):
-    """Compare regular logprobs vs fingerprint logprobs to ensure they match"""
-    import json
-    from tokasaurus.server.utils import unpack_logprobs_data
-    
-    prompt = "What is 2+2?"
-    kwargs = dict(
+    # Make request with normal OpenAI logprobs format
+    normal_response = client.chat.completions.create(
         model="",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=3,
-        temperature=0.0,
+        max_tokens=max_tokens,
+        temperature=0.0,  # Greedy decoding
         logprobs=True,
-        top_logprobs=5,  # Use max configured value
+        top_logprobs=k,
     )
-    
-    # Warmup the cache, without this we get small differences in the logprobs 
-    _ = client.chat.completions.create(**kwargs)
 
-
-    regular_response = client.chat.completions.create(**kwargs)
-    
-    fingerprint_response = client.chat.completions.create(
-        **kwargs, 
-        extra_body=dict(logprobs_in_fingerprint=True)
+    # Make identical request with packed format
+    packed_response = client.chat.completions.create(
+        model="",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+        temperature=0.0,  # Greedy decoding
+        logprobs=True,
+        top_logprobs=k,
+        extra_body=dict(logprobs_in_fingerprint=True),
     )
-    
-    # Extract regular logprobs
-    regular_logprobs = regular_response.choices[0].logprobs
-    assert regular_logprobs is not None
-    assert regular_logprobs.content is not None
-    
-    # Extract fingerprint logprobs
-    fingerprint_data = json.loads(fingerprint_response.system_fingerprint)
-    packed_data = fingerprint_data["logprobs_packed"].encode('ascii')
-    unpacked_sequences = unpack_logprobs_data(packed_data)
-    topk_ids, topk_logprobs = unpacked_sequences[0]
-    
-    # Compare token count
-    assert len(regular_logprobs.content) == len(topk_ids)
-    
-    # Compare each token's top logprobs
-    for i, regular_token in enumerate(regular_logprobs.content):
-        fingerprint_token_logprobs = topk_logprobs[i]
-        
-        # Should have same number of top logprobs
-        assert len(regular_token.top_logprobs) == len(fingerprint_token_logprobs)
-        
-        # Compare logprob values (allowing for small floating point differences)
-        for j, regular_top in enumerate(regular_token.top_logprobs):
-            fingerprint_logprob = fingerprint_token_logprobs[j]
-            print(regular_top.logprob, fingerprint_logprob)
-            
-            assert abs(regular_top.logprob - fingerprint_logprob) < 1e-2
+
+    # Extract normal logprobs
+    normal_logprobs = normal_response.choices[0].logprobs
+    assert normal_logprobs is not None
+    assert normal_logprobs.content is not None
+
+    # Extract packed logprobs from fingerprint
+    assert packed_response.system_fingerprint is not None
+    assert packed_response.choices[0].logprobs is None
+    fingerprint_data = json.loads(packed_response.system_fingerprint)
+
+    # Verify fingerprint contains expected fields
+    assert "completion_ids" in fingerprint_data
+    assert "packed_chosen_logprobs" in fingerprint_data
+    assert "packed_topk_indices" in fingerprint_data
+    assert "packed_topk_logprobs" in fingerprint_data
+
+    # Decode packed data
+    chosen_logprobs = np.frombuffer(
+        base64.b64decode(fingerprint_data["packed_chosen_logprobs"][0]),
+        dtype=np.float32,
+    )
+    topk_ids = np.frombuffer(
+        base64.b64decode(fingerprint_data["packed_topk_indices"][0]), dtype=np.int32
+    ).reshape(-1, k)
+    topk_logprobs = np.frombuffer(
+        base64.b64decode(fingerprint_data["packed_topk_logprobs"][0]), dtype=np.float32
+    ).reshape(-1, k)
+
+    assert topk_ids.shape == topk_logprobs.shape
+
+    # Number of tokens should match
+    num_tokens = len(chosen_logprobs)
+    assert num_tokens == len(normal_logprobs.content)
+
+    # Compare token by token
+    for i, normal_token in enumerate(normal_logprobs.content):
+        # Chosen logprob should match
+        assert abs(normal_token.logprob - chosen_logprobs[i]) < 1e-6
+
+        # Number of top logprobs should match
+        assert len(normal_token.top_logprobs) == k
+
+        # Compare each top logprob
+        for j, normal_top in enumerate(normal_token.top_logprobs):
+            packed_logprob = topk_logprobs[i][j]
+
+            # Logprob values should be identical (within floating point tolerance)
+            assert abs(normal_top.logprob - packed_logprob) < 1e-6, (
+                f"Token {i}, top-{j}: normal={normal_top.logprob}, packed={packed_logprob}"
+            )
+
+    # Verify completion text is identical
+    assert (
+        normal_response.choices[0].message.content
+        == packed_response.choices[0].message.content
+    )
