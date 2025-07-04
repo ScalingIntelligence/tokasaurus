@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 import numpy as np
-
 from fastapi import HTTPException, Request
 from loguru import logger
 from openai.types.batch import Batch, BatchRequestCounts
@@ -643,95 +642,128 @@ def process_request(
 def pack_logprobs_data(sequence_outputs: list["SequenceOutput"]) -> bytes:
     """
     Store topk logprobs data as a list of sequence dicts with base64-encoded numpy arrays.
-    
+
     Format: List of sequence dicts, each containing single numpy arrays for all tokens
     """
     sequences = []
-    
+
     for seq_out in sequence_outputs:
         if not seq_out.topk_ids or not seq_out.topk_logprobs:
             # Empty sequence
-            sequences.append({
-                "topk_ids": "",
-                "topk_logprobs": "",
-                "num_tokens": 0,
-                "topk_size": 0
-            })
+            sequences.append(
+                {"topk_ids": "", "topk_logprobs": "", "num_tokens": 0, "topk_size": 0}
+            )
             continue
-            
+
         # Stack all tokens into single arrays
         all_ids = np.array(seq_out.topk_ids, dtype=np.int32)
         all_logprobs = np.array(seq_out.topk_logprobs, dtype=np.float16)
-        
-        sequences.append({
-            "topk_ids": base64.b64encode(all_ids.tobytes()).decode('ascii'),
-            "topk_logprobs": base64.b64encode(all_logprobs.tobytes()).decode('ascii'),
-            "num_tokens": len(seq_out.topk_ids),
-            "topk_size": len(seq_out.topk_ids[0]) if seq_out.topk_ids else 0
-        })
-    
+
+        sequences.append(
+            {
+                "topk_ids": base64.b64encode(all_ids.tobytes()).decode("ascii"),
+                "topk_logprobs": base64.b64encode(all_logprobs.tobytes()).decode(
+                    "ascii"
+                ),
+                "num_tokens": len(seq_out.topk_ids),
+                "topk_size": len(seq_out.topk_ids[0]) if seq_out.topk_ids else 0,
+            }
+        )
+
     # Serialize to JSON and encode
-    json_bytes = json.dumps(sequences).encode('utf-8')
+    json_bytes = json.dumps(sequences).encode("utf-8")
     return base64.b64encode(json_bytes)
 
 
-def unpack_logprobs_data(packed_data: bytes) -> list[tuple[list[list[int]], list[list[float]]]]:
+def unpack_logprobs_data(
+    packed_data: bytes,
+) -> list[tuple[list[list[int]], list[list[float]]]]:
     """
     Decompress logprobs data back to topk_ids and topk_logprobs lists.
-    
+
     Returns: List of (topk_ids, topk_logprobs) tuples for each sequence
     """
     # Decode and parse JSON
     json_bytes = base64.b64decode(packed_data)
-    sequences = json.loads(json_bytes.decode('utf-8'))
-    
+    sequences = json.loads(json_bytes.decode("utf-8"))
+
     result = []
-    
+
     for seq_data in sequences:
         if seq_data["num_tokens"] == 0:
             # Empty sequence
             result.append(([], []))
             continue
-            
+
         # Decode base64 and reconstruct numpy arrays
         ids_bytes = base64.b64decode(seq_data["topk_ids"])
         logprobs_bytes = base64.b64decode(seq_data["topk_logprobs"])
-        
+
         num_tokens = seq_data["num_tokens"]
         topk_size = seq_data["topk_size"]
-        
-        ids_array = np.frombuffer(ids_bytes, dtype=np.int32).reshape(num_tokens, topk_size)
-        logprobs_array = np.frombuffer(logprobs_bytes, dtype=np.float16).reshape(num_tokens, topk_size)
-        
+
+        ids_array = np.frombuffer(ids_bytes, dtype=np.int32).reshape(
+            num_tokens, topk_size
+        )
+        logprobs_array = np.frombuffer(logprobs_bytes, dtype=np.float16).reshape(
+            num_tokens, topk_size
+        )
+
         # Convert back to lists
         topk_ids = ids_array.tolist()
         topk_logprobs = logprobs_array.tolist()
-        
+
         result.append((topk_ids, topk_logprobs))
-    
+
     return result
 
 
-def make_completions_fingerprint(state: ServerState, output: RequestOutput, logprobs_in_fingerprint: bool):
+def encode_array(array: np.ndarray):
+    return base64.b64encode(array.tobytes()).decode("ascii")
+
+
+def make_completions_fingerprint(
+    output: RequestOutput,
+    add_logprobs: bool,
+    topk: int | None,
+):
     """
-    Sneaky way to send the completion ids to the client
-    while adhering to the API spec.
+    Sneaky way to send extra data back to the client while adhering to the API spec.
     """
     obj = {
         "completion_ids": [o.completion_ids for o in output.sequence_outputs],
     }
-    
-    # Add compressed logprobs if enabled and available
-    if (logprobs_in_fingerprint and 
-        output.sequence_outputs and 
-        any(len(seq.topk_ids) > 0 for seq in output.sequence_outputs if seq.topk_ids)):
-        try:
-            packed_logprobs = pack_logprobs_data(output.sequence_outputs)
-            obj["logprobs_packed"] = packed_logprobs.decode('ascii')
-        except Exception as e:
-            # Log error but don't fail the request
-            state.logger.warning(f"Failed to pack logprobs for fingerprint: {e}")
-    
+
+    # the default openai logprobs format involves many nested small objects which
+    # can take a lot of time to serialize/deserialize and inflate the response size.
+    # here we send the logprobs as base64-encoded numpy arrays instead.
+
+    packed_chosen_logprobs = None
+    packed_topk_indices = None
+    packed_topk_logprobs = None
+
+    if add_logprobs:
+        packed_chosen_logprobs = [
+            encode_array(np.array(o.logprobs, dtype=np.float32)) for o in output.sequence_outputs
+        ]
+
+        if topk is not None and topk > 0:
+            packed_topk_indices = []
+            packed_topk_logprobs = []
+
+            for seq_out in output.sequence_outputs:
+                stack_topk_ids = np.array(seq_out.topk_ids, dtype=np.int32)[:, :topk]
+                stack_topk_logprobs = np.array(seq_out.topk_logprobs, dtype=np.float32)[
+                    :, :topk
+                ]
+
+                packed_topk_indices.append(encode_array(stack_topk_ids))
+                packed_topk_logprobs.append(encode_array(stack_topk_logprobs))
+
+    obj["packed_chosen_logprobs"] = packed_chosen_logprobs
+    obj["packed_topk_indices"] = packed_topk_indices
+    obj["packed_topk_logprobs"] = packed_topk_logprobs
+
     return json.dumps(obj)
 
 
@@ -776,7 +808,11 @@ def process_chat_completions_output(
         choices=choices,
         created=nowstamp(),
         object="chat.completion",
-        system_fingerprint=make_completions_fingerprint(state, output, logprobs_in_fingerprint=crequest.logprobs_in_fingerprint),
+        system_fingerprint=make_completions_fingerprint(
+            output,
+            add_logprobs=crequest.logprobs_in_fingerprint,
+            topk=crequest.top_logprobs,
+        ),
     )
 
 
@@ -791,7 +827,7 @@ def process_completions_output(
     choices = []
     for i in range(request.n):
         seq_out = output.sequence_outputs[i]
-   
+
         if crequest.logprobs and not crequest.logprobs_in_fingerprint:
             logprobs = make_completion_logprobs(
                 crequest=crequest,
@@ -816,7 +852,11 @@ def process_completions_output(
         choices=choices,
         created=nowstamp(),
         object="text_completion",
-        system_fingerprint=make_completions_fingerprint(state, output, logprobs_in_fingerprint=crequest.logprobs_in_fingerprint),
+        system_fingerprint=make_completions_fingerprint(
+            output,
+            add_logprobs=crequest.logprobs_in_fingerprint,
+            topk=crequest.logprobs,
+        ),
     )
 
 
