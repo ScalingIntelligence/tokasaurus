@@ -1,9 +1,11 @@
 import asyncio
+import base64
 import functools
 import json
 from dataclasses import dataclass, field
 from uuid import uuid4
 
+import numpy as np
 from fastapi import HTTPException, Request
 from loguru import logger
 from openai.types.batch import Batch, BatchRequestCounts
@@ -637,14 +639,53 @@ def process_request(
     return req
 
 
-def make_completions_fingerprint(output: RequestOutput):
+def encode_array(array: np.ndarray):
+    return base64.b64encode(array.tobytes()).decode("ascii")
+
+
+def make_completions_fingerprint(
+    output: RequestOutput,
+    add_logprobs: bool,
+    topk: int | None,
+):
     """
-    Sneaky way to send the completion ids to the client
-    while adhering to the API spec.
+    Sneaky way to send extra data back to the client while adhering to the API spec.
     """
     obj = {
         "completion_ids": [o.completion_ids for o in output.sequence_outputs],
     }
+
+    # the default openai logprobs format involves many nested small objects which
+    # can take a lot of time to serialize/deserialize and inflate the response size.
+    # here we send the logprobs as base64-encoded numpy arrays instead.
+
+    packed_chosen_logprobs = None
+    packed_topk_indices = None
+    packed_topk_logprobs = None
+
+    if add_logprobs:
+        packed_chosen_logprobs = [
+            encode_array(np.array(o.logprobs, dtype=np.float32))
+            for o in output.sequence_outputs
+        ]
+
+        if topk is not None and topk > 0:
+            packed_topk_indices = []
+            packed_topk_logprobs = []
+
+            for seq_out in output.sequence_outputs:
+                stack_topk_ids = np.array(seq_out.topk_ids, dtype=np.int32)[:, :topk]
+                stack_topk_logprobs = np.array(seq_out.topk_logprobs, dtype=np.float32)[
+                    :, :topk
+                ]
+
+                packed_topk_indices.append(encode_array(stack_topk_ids))
+                packed_topk_logprobs.append(encode_array(stack_topk_logprobs))
+
+    obj["packed_chosen_logprobs"] = packed_chosen_logprobs
+    obj["packed_topk_indices"] = packed_topk_indices
+    obj["packed_topk_logprobs"] = packed_topk_logprobs
+
     return json.dumps(obj)
 
 
@@ -664,7 +705,7 @@ def process_chat_completions_output(
             content=completions[i],
         )
 
-        if crequest.logprobs:
+        if crequest.logprobs and not crequest.logprobs_in_fingerprint:
             logprobs = make_chat_logprobs(
                 crequest=crequest,
                 seq_out=seq_out,
@@ -689,7 +730,11 @@ def process_chat_completions_output(
         choices=choices,
         created=nowstamp(),
         object="chat.completion",
-        system_fingerprint=make_completions_fingerprint(output),
+        system_fingerprint=make_completions_fingerprint(
+            output,
+            add_logprobs=crequest.logprobs_in_fingerprint,
+            topk=crequest.top_logprobs,
+        ),
     )
 
 
@@ -704,14 +749,15 @@ def process_completions_output(
     choices = []
     for i in range(request.n):
         seq_out = output.sequence_outputs[i]
-        if crequest.logprobs is None:
-            logprobs = None
-        else:
+
+        if crequest.logprobs and not crequest.logprobs_in_fingerprint:
             logprobs = make_completion_logprobs(
                 crequest=crequest,
                 seq_out=seq_out,
                 inverse_vocab=state.inverse_vocab,
             )
+        else:
+            logprobs = None
 
         choice = CompletionChoice(
             index=i,
@@ -728,7 +774,11 @@ def process_completions_output(
         choices=choices,
         created=nowstamp(),
         object="text_completion",
-        system_fingerprint=make_completions_fingerprint(output),
+        system_fingerprint=make_completions_fingerprint(
+            output,
+            add_logprobs=crequest.logprobs_in_fingerprint,
+            topk=crequest.logprobs,
+        ),
     )
 
 

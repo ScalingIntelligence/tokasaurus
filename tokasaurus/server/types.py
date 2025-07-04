@@ -43,6 +43,9 @@ class CompletionsRequest(BaseModel):
     user: Optional[str] = None
     metadata: Optional[dict] = None
 
+    # pack the logprobs into the fingerprint in a more space-efficient way
+    logprobs_in_fingerprint: bool = False
+
     # extra fields to get sglang benchmarking script to work
     ignore_eos: bool = False
 
@@ -86,10 +89,14 @@ class ChatCompletionRequest(BaseModel):
     user: Optional[str] = None
     metadata: Optional[dict] = None
 
+
     # extra fields ---
 
     # needed for sglang benchmarking script
     ignore_eos: bool = False
+
+    # pack the logprobs into the fingerprint in a more space-efficient way
+    logprobs_in_fingerprint: bool = False
 
     # extra chat template args, e.g. to pass enable_thinking for Qwen3 models: https://huggingface.co/Qwen/Qwen3-32B
     apply_chat_template_overrides: Optional[dict[str, object]] = None

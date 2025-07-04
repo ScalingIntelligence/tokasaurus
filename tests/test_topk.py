@@ -1,6 +1,9 @@
+import base64
+import json
 import os
 import shlex
 
+import numpy as np
 import pydra
 import pytest
 import torch.multiprocessing as mp
@@ -34,8 +37,7 @@ def make_config():
     return config
 
 
-@pytest.fixture(scope="module")
-def client():
+def _client():
     mp.set_start_method("spawn", force=True)
 
     config = make_config()
@@ -46,6 +48,11 @@ def client():
             api_key="beepboop", base_url=f"http://localhost:{config.port}/v1"
         )
         yield client
+
+
+@pytest.fixture(scope="module")
+def client():
+    yield from _client()
 
 
 # Test prompts
@@ -134,3 +141,90 @@ def test_chat_completions_greedy_logprobs_matches_top1(client: OpenAI):
 
         # The top-1 logprob should match the token logprob
         assert abs(top_logprobs[0].logprob - token_logprob.logprob) < 1e-6
+
+
+def test_packed_vs_normal_logprobs(client: OpenAI):
+    """Test that packed format and normal OpenAI format produce identical results for the same request"""
+
+    # Use a simple prompt and greedy decoding for deterministic results
+    prompt = "What is the capital of France?"
+    k = 3  # Number of top logprobs to request
+    max_tokens = 10
+
+    # Make request with normal OpenAI logprobs format
+    normal_response = client.chat.completions.create(
+        model="",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+        temperature=0.0,  # Greedy decoding
+        logprobs=True,
+        top_logprobs=k,
+    )
+
+    # Make identical request with packed format
+    packed_response = client.chat.completions.create(
+        model="",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+        temperature=0.0,  # Greedy decoding
+        logprobs=True,
+        top_logprobs=k,
+        extra_body=dict(logprobs_in_fingerprint=True),
+    )
+
+    # Extract normal logprobs
+    normal_logprobs = normal_response.choices[0].logprobs
+    assert normal_logprobs is not None
+    assert normal_logprobs.content is not None
+
+    # Extract packed logprobs from fingerprint
+    assert packed_response.system_fingerprint is not None
+    assert packed_response.choices[0].logprobs is None
+    fingerprint_data = json.loads(packed_response.system_fingerprint)
+
+    # Verify fingerprint contains expected fields
+    assert "completion_ids" in fingerprint_data
+    assert "packed_chosen_logprobs" in fingerprint_data
+    assert "packed_topk_indices" in fingerprint_data
+    assert "packed_topk_logprobs" in fingerprint_data
+
+    # Decode packed data
+    chosen_logprobs = np.frombuffer(
+        base64.b64decode(fingerprint_data["packed_chosen_logprobs"][0]),
+        dtype=np.float32,
+    )
+    topk_ids = np.frombuffer(
+        base64.b64decode(fingerprint_data["packed_topk_indices"][0]), dtype=np.int32
+    ).reshape(-1, k)
+    topk_logprobs = np.frombuffer(
+        base64.b64decode(fingerprint_data["packed_topk_logprobs"][0]), dtype=np.float32
+    ).reshape(-1, k)
+
+    assert topk_ids.shape == topk_logprobs.shape
+
+    # Number of tokens should match
+    num_tokens = len(chosen_logprobs)
+    assert num_tokens == len(normal_logprobs.content)
+
+    # Compare token by token
+    for i, normal_token in enumerate(normal_logprobs.content):
+        # Chosen logprob should match
+        assert abs(normal_token.logprob - chosen_logprobs[i]) < 1e-6
+
+        # Number of top logprobs should match
+        assert len(normal_token.top_logprobs) == k
+
+        # Compare each top logprob
+        for j, normal_top in enumerate(normal_token.top_logprobs):
+            packed_logprob = topk_logprobs[i][j]
+
+            # Logprob values should be identical (within floating point tolerance)
+            assert abs(normal_top.logprob - packed_logprob) < 1e-6, (
+                f"Token {i}, top-{j}: normal={normal_top.logprob}, packed={packed_logprob}"
+            )
+
+    # Verify completion text is identical
+    assert (
+        normal_response.choices[0].message.content
+        == packed_response.choices[0].message.content
+    )
