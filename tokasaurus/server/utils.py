@@ -639,85 +639,6 @@ def process_request(
     return req
 
 
-def pack_logprobs_data(sequence_outputs: list["SequenceOutput"]) -> bytes:
-    """
-    Store topk logprobs data as a list of sequence dicts with base64-encoded numpy arrays.
-
-    Format: List of sequence dicts, each containing single numpy arrays for all tokens
-    """
-    sequences = []
-
-    for seq_out in sequence_outputs:
-        if not seq_out.topk_ids or not seq_out.topk_logprobs:
-            # Empty sequence
-            sequences.append(
-                {"topk_ids": "", "topk_logprobs": "", "num_tokens": 0, "topk_size": 0}
-            )
-            continue
-
-        # Stack all tokens into single arrays
-        all_ids = np.array(seq_out.topk_ids, dtype=np.int32)
-        all_logprobs = np.array(seq_out.topk_logprobs, dtype=np.float16)
-
-        sequences.append(
-            {
-                "topk_ids": base64.b64encode(all_ids.tobytes()).decode("ascii"),
-                "topk_logprobs": base64.b64encode(all_logprobs.tobytes()).decode(
-                    "ascii"
-                ),
-                "num_tokens": len(seq_out.topk_ids),
-                "topk_size": len(seq_out.topk_ids[0]) if seq_out.topk_ids else 0,
-            }
-        )
-
-    # Serialize to JSON and encode
-    json_bytes = json.dumps(sequences).encode("utf-8")
-    return base64.b64encode(json_bytes)
-
-
-def unpack_logprobs_data(
-    packed_data: bytes,
-) -> list[tuple[list[list[int]], list[list[float]]]]:
-    """
-    Decompress logprobs data back to topk_ids and topk_logprobs lists.
-
-    Returns: List of (topk_ids, topk_logprobs) tuples for each sequence
-    """
-    # Decode and parse JSON
-    json_bytes = base64.b64decode(packed_data)
-    sequences = json.loads(json_bytes.decode("utf-8"))
-
-    result = []
-
-    for seq_data in sequences:
-        if seq_data["num_tokens"] == 0:
-            # Empty sequence
-            result.append(([], []))
-            continue
-
-        # Decode base64 and reconstruct numpy arrays
-        ids_bytes = base64.b64decode(seq_data["topk_ids"])
-        logprobs_bytes = base64.b64decode(seq_data["topk_logprobs"])
-
-        num_tokens = seq_data["num_tokens"]
-        topk_size = seq_data["topk_size"]
-
-        ids_array = np.frombuffer(ids_bytes, dtype=np.int32).reshape(
-            num_tokens, topk_size
-        )
-        logprobs_array = np.frombuffer(logprobs_bytes, dtype=np.float16).reshape(
-            num_tokens, topk_size
-        )
-
-        # Convert back to lists
-        topk_ids = ids_array.tolist()
-        topk_logprobs = logprobs_array.tolist()
-
-        result.append((topk_ids, topk_logprobs))
-
-    return result
-
-
 def encode_array(array: np.ndarray):
     return base64.b64encode(array.tobytes()).decode("ascii")
 
@@ -744,7 +665,8 @@ def make_completions_fingerprint(
 
     if add_logprobs:
         packed_chosen_logprobs = [
-            encode_array(np.array(o.logprobs, dtype=np.float32)) for o in output.sequence_outputs
+            encode_array(np.array(o.logprobs, dtype=np.float32))
+            for o in output.sequence_outputs
         ]
 
         if topk is not None and topk > 0:
