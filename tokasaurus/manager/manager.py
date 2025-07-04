@@ -680,7 +680,7 @@ def soft_allocate(
     # to the sequence. but the scheduler functions need these seq attributes set.
     seq.cartridge_indices = cartridge_indices if cartridge_indices else None
     seq.kv_indices = cached_block_ids  # Token blocks only
-    seq.num_cached_prompt_tokens = num_cached_tokens
+    seq.seq_output.num_cached_prompt_tokens = num_cached_tokens
     seq.prompt_scheduled = num_cached_tokens
 
 
@@ -717,7 +717,7 @@ def real_allocate(
 
     seq.cartridge_indices = cartridge_indices
     seq.kv_indices = token_indices  # Now token-only
-    seq.num_cached_prompt_tokens = num_cached_prompt_tokens
+    seq.seq_output.num_cached_prompt_tokens = num_cached_prompt_tokens
     seq.prompt_scheduled = num_cached_prompt_tokens
 
     assert seq.batch_index is None
