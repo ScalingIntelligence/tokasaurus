@@ -634,7 +634,7 @@ def process_request(
     return req
 
 
-def compress_logprobs_data(sequence_outputs: list["SequenceOutput"]) -> bytes:
+def pack_logprobs_data(sequence_outputs: list["SequenceOutput"]) -> bytes:
     """
     Store topk logprobs data as a list of sequence dicts with base64-encoded numpy arrays.
     
@@ -669,14 +669,14 @@ def compress_logprobs_data(sequence_outputs: list["SequenceOutput"]) -> bytes:
     return base64.b64encode(json_bytes)
 
 
-def decompress_logprobs_data(compressed_data: bytes) -> list[tuple[list[list[int]], list[list[float]]]]:
+def unpack_logprobs_data(packed_data: bytes) -> list[tuple[list[list[int]], list[list[float]]]]:
     """
     Decompress logprobs data back to topk_ids and topk_logprobs lists.
     
     Returns: List of (topk_ids, topk_logprobs) tuples for each sequence
     """
     # Decode and parse JSON
-    json_bytes = base64.b64decode(compressed_data)
+    json_bytes = base64.b64decode(packed_data)
     sequences = json.loads(json_bytes.decode('utf-8'))
     
     result = []
@@ -720,11 +720,11 @@ def make_completions_fingerprint(state: ServerState, output: RequestOutput, logp
         output.sequence_outputs and 
         any(len(seq.topk_ids) > 0 for seq in output.sequence_outputs if seq.topk_ids)):
         try:
-            compressed_logprobs = compress_logprobs_data(output.sequence_outputs)
-            obj["logprobs_compressed"] = compressed_logprobs.decode('ascii')
+            packed_logprobs = pack_logprobs_data(output.sequence_outputs)
+            obj["logprobs_packed"] = packed_logprobs.decode('ascii')
         except Exception as e:
             # Log error but don't fail the request
-            state.logger.warning(f"Failed to compress logprobs for fingerprint: {e}")
+            state.logger.warning(f"Failed to pack logprobs for fingerprint: {e}")
     
     return json.dumps(obj)
 

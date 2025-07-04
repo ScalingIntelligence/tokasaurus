@@ -144,7 +144,7 @@ def test_logprobs_in_fingerprint_compression():
     """Test the compression/decompression functions directly"""
     import numpy as np
     from tokasaurus.manager.types import SequenceOutput
-    from tokasaurus.server.utils import compress_logprobs_data, decompress_logprobs_data
+    from tokasaurus.server.utils import pack_logprobs_data, unpack_logprobs_data
     
     # Create mock sequence output with topk data
     seq_out = SequenceOutput()
@@ -158,12 +158,12 @@ def test_logprobs_in_fingerprint_compression():
     ]
     
     # Test compression
-    compressed_data = compress_logprobs_data([seq_out])
+    compressed_data = pack_logprobs_data([seq_out])
     assert isinstance(compressed_data, bytes)
     assert len(compressed_data) > 0
     
     # Test decompression
-    decompressed = decompress_logprobs_data(compressed_data)
+    decompressed = unpack_logprobs_data(compressed_data)
     assert len(decompressed) == 1
     
     topk_ids, topk_logprobs = decompressed[0]
@@ -187,7 +187,7 @@ def test_logprobs_compression_multiple_sequences():
     """Test compression with multiple sequences including empty ones"""
     import numpy as np
     from tokasaurus.manager.types import SequenceOutput
-    from tokasaurus.server.utils import compress_logprobs_data, decompress_logprobs_data
+    from tokasaurus.server.utils import pack_logprobs_data, unpack_logprobs_data
     
     # Create multiple sequence outputs
     seq1 = SequenceOutput()
@@ -209,8 +209,8 @@ def test_logprobs_compression_multiple_sequences():
     ]
     
     # Test compression and decompression
-    compressed = compress_logprobs_data([seq1, seq2, seq3])
-    decompressed = decompress_logprobs_data(compressed)
+    compressed = pack_logprobs_data([seq1, seq2, seq3])
+    decompressed = unpack_logprobs_data(compressed)
     
     assert len(decompressed) == 3
     
@@ -243,7 +243,7 @@ def test_logprobs_in_fingerprint_end_to_end(client: OpenAI):
     """Test that logprobs_in_fingerprint=True produces compressed data that matches regular logprobs"""
     import json
     import base64
-    from tokasaurus.server.utils import decompress_logprobs_data
+    from tokasaurus.server.utils import unpack_logprobs_data
     
     # Make a request with logprobs enabled
     response = client.chat.completions.create(
@@ -266,11 +266,11 @@ def test_logprobs_in_fingerprint_end_to_end(client: OpenAI):
     assert response.system_fingerprint is not None
     fingerprint_data = json.loads(response.system_fingerprint)
     assert "completion_ids" in fingerprint_data
-    assert "logprobs_compressed" in fingerprint_data
+    assert "logprobs_packed" in fingerprint_data
     
     # Decompress the logprobs data
-    compressed_data = fingerprint_data["logprobs_compressed"].encode('ascii')
-    decompressed_sequences = decompress_logprobs_data(compressed_data)
+    compressed_data = fingerprint_data["logprobs_packed"].encode('ascii')
+    decompressed_sequences = unpack_logprobs_data(compressed_data)
     
     # Should have one sequence (n=1)
     assert len(decompressed_sequences) == 1
@@ -304,12 +304,10 @@ def test_logprobs_in_fingerprint_end_to_end(client: OpenAI):
 def test_fingerprint_vs_regular_logprobs_comparison(client: OpenAI):
     """Compare regular logprobs vs fingerprint logprobs to ensure they match"""
     import json
-    from tokasaurus.server.utils import decompress_logprobs_data
+    from tokasaurus.server.utils import unpack_logprobs_data
     
     prompt = "What is 2+2?"
-    
-    # Get regular logprobs response
-    regular_response = client.chat.completions.create(
+    kwargs = dict(
         model="",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=3,
@@ -318,15 +316,15 @@ def test_fingerprint_vs_regular_logprobs_comparison(client: OpenAI):
         top_logprobs=5,  # Use max configured value
     )
     
-    # Get fingerprint logprobs response
+    # Warmup the cache, without this we get small differences in the logprobs 
+    _ = client.chat.completions.create(**kwargs)
+
+
+    regular_response = client.chat.completions.create(**kwargs)
+    
     fingerprint_response = client.chat.completions.create(
-        model="",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=3,
-        temperature=0.0,
-        logprobs=True,
-        top_logprobs=5,  # Use max configured value
-        extra_body=dict(logprobs_in_fingerprint=True),
+        **kwargs, 
+        extra_body=dict(logprobs_in_fingerprint=True)
     )
     
     # Extract regular logprobs
@@ -336,9 +334,9 @@ def test_fingerprint_vs_regular_logprobs_comparison(client: OpenAI):
     
     # Extract fingerprint logprobs
     fingerprint_data = json.loads(fingerprint_response.system_fingerprint)
-    compressed_data = fingerprint_data["logprobs_compressed"].encode('ascii')
-    decompressed_sequences = decompress_logprobs_data(compressed_data)
-    topk_ids, topk_logprobs = decompressed_sequences[0]
+    packed_data = fingerprint_data["logprobs_packed"].encode('ascii')
+    unpacked_sequences = unpack_logprobs_data(packed_data)
+    topk_ids, topk_logprobs = unpacked_sequences[0]
     
     # Compare token count
     assert len(regular_logprobs.content) == len(topk_ids)
@@ -352,6 +350,7 @@ def test_fingerprint_vs_regular_logprobs_comparison(client: OpenAI):
         
         # Compare logprob values (allowing for small floating point differences)
         for j, regular_top in enumerate(regular_token.top_logprobs):
-            breakpoint()
             fingerprint_logprob = fingerprint_token_logprobs[j]
+            print(regular_top.logprob, fingerprint_logprob)
+            
             assert abs(regular_top.logprob - fingerprint_logprob) < 1e-2
