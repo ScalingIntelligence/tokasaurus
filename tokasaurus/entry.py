@@ -1,3 +1,6 @@
+from tokasaurus.environment import assert_flashinfer_supported
+
+assert_flashinfer_supported()
 from contextlib import contextmanager
 
 import pydra
