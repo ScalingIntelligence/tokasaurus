@@ -45,6 +45,17 @@ pip install -e .
 
 ```
 
+### Platform Compatibility
+
+Tokasaurus uses `flashinfer`, which depends on [Triton](https://github.com/triton-lang/triton).
+
+**Triton is not supported on macOS** — there are no compatible wheels or source build paths, and it requires CUDA (not available on macOS).
+
+If you're running Tokasaurus on macOS, you'll encounter an error like: ModuleNotFoundError: No module named ‘triton’
+
+We recommend running Tokasaurus in a **Linux environment with a CUDA-compatible GPU** for full functionality.
+
+
 ## Quickstart
 
 Once installed, you can launch the engine with:
