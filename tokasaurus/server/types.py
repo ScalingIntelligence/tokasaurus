@@ -120,6 +120,15 @@ class BatchCreationRequest(BaseModel):
     metadata: Optional[dict[str, str]] = Field(default=None)
 
 
+class BatchCompletionsRequest(BaseModel):
+    """Request model for synchronous batch completions"""
+
+    requests: list[ChatCompletionRequest] = Field(
+        description="List of chat completion requests to process"
+    )
+    metadata: Optional[dict[str, str]] = Field(default=None)
+
+
 @dataclass
 class RequestOutput:
     id: str
