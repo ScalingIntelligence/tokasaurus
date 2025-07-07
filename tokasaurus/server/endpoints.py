@@ -236,7 +236,7 @@ async def list_models():
 
 @app.post("/batch/chat/completions")
 @with_cancellation
-async def oai_batch_completions(request: BatchCompletionsRequest, raw_request: Request):
+async def synchronous_batch_completions(request: BatchCompletionsRequest, raw_request: Request):
     state: ServerState = app.state.state_bundle
     
     async def generate_and_process(req: ChatCompletionRequest):
