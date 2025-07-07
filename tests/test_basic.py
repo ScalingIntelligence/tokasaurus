@@ -304,8 +304,10 @@ def test_batch_completions_endpoint(client: OpenAI):
     }
     
     # Make request to our custom endpoint
+    url = str(client.base_url).split("/v1")[0] + "/batch/chat/completions"  # update the path
+
     response = requests.post(
-        f"{client.base_url}batch/chat/completions",
+        url,
         json=batch_request,
         headers={"Authorization": f"Bearer {client.api_key}"}
     )

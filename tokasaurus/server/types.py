@@ -126,7 +126,6 @@ class BatchCompletionsRequest(BaseModel):
     requests: list[ChatCompletionRequest] = Field(
         description="List of chat completion requests to process"
     )
-    metadata: Optional[dict[str, str]] = Field(default=None)
 
 
 @dataclass
