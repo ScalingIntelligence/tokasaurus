@@ -2,7 +2,7 @@ import json
 import math
 import os
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 import torch.distributed as dist
@@ -18,6 +18,7 @@ from tokasaurus.manager.input_building import make_dummy_batch
 from tokasaurus.model.attention_utils import create_wrappers_for_cudagraph
 from tokasaurus.model.llama import LlamaForCausalLM
 from tokasaurus.model.qwen import Qwen2ForCausalLM
+from tokasaurus.model.qwen3 import Qwen3ForCausalLM
 from tokasaurus.model.types import (
     BasicWorkerState,
     BatchState,
@@ -317,11 +318,12 @@ def run_overlapped_loop(
             break
 
 
-model_type = LlamaForCausalLM | Qwen2ForCausalLM
+model_type = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM
 
 models: dict[str, type[model_type]] = {
     "llama": LlamaForCausalLM,
     "qwen2": Qwen2ForCausalLM,
+    "qwen3": Qwen3ForCausalLM,
 }
 
 
@@ -344,6 +346,8 @@ def make_model(
         tp_rank=tp_rank,
         tp_group=tp_group,
         torch_compile=config.torch_compile,
+        enable_chosen_logprobs=config.enable_chosen_logprobs,
+        topk_logprobs=config.max_topk_logprobs,
     )
 
     if config.rope_scaling is not None:
@@ -367,7 +371,7 @@ def make_model(
     if config.torch_compile:
         use_async_tp = config.tp_size > 1 and config.async_tp_threshold is not None
         if use_async_tp:
-            torch._dynamo.config.cache_size_limit = 32
+            torch._dynamo.config.cache_size_limit = 32  # type: ignore
             assert tp_group is not None
             enable_symm_mem_for_group(tp_group.group_name)
 
@@ -610,8 +614,9 @@ class CUDAGraphInfo:
         self.copy_into_input_batch_state(input_batch_state, non_blocking)
         self.graph.replay()
 
-        input_batch_state.output_ids = self.output_batch_state.output_ids
-        input_batch_state.logprobs = self.output_batch_state.logprobs
+        # making a copy since later we sometimes slice the tensors in the object
+        assert self.output_batch_state.outputs is not None
+        input_batch_state.outputs = replace(self.output_batch_state.outputs)
         input_batch_state.hidden_states = self.output_batch_state.hidden_states
 
         return input_batch_state
@@ -914,10 +919,25 @@ def unpad_output_batch_state(
     output_batch_state: BatchState,
     model_input: ModelInput,
 ):
-    assert output_batch_state.output_ids is not None
-    assert output_batch_state.logprobs is not None
+    assert output_batch_state.outputs is not None
 
     num_lm_head_tokens = model_input.num_lm_head_tokens()
 
-    output_batch_state.output_ids = output_batch_state.output_ids[:num_lm_head_tokens]
-    output_batch_state.logprobs = output_batch_state.logprobs[:num_lm_head_tokens]
+    output_batch_state.outputs.output_ids = output_batch_state.outputs.output_ids[
+        :num_lm_head_tokens
+    ]
+
+    if output_batch_state.outputs.chosen_logprobs is not None:
+        output_batch_state.outputs.chosen_logprobs = (
+            output_batch_state.outputs.chosen_logprobs[:num_lm_head_tokens]
+        )
+
+    if output_batch_state.outputs.topk_indices is not None:
+        output_batch_state.outputs.topk_indices = (
+            output_batch_state.outputs.topk_indices[:num_lm_head_tokens]
+        )
+
+    if output_batch_state.outputs.topk_logprobs is not None:
+        output_batch_state.outputs.topk_logprobs = (
+            output_batch_state.outputs.topk_logprobs[:num_lm_head_tokens]
+        )

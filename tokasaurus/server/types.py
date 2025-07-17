@@ -2,11 +2,14 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, Optional, Union
+from typing import TYPE_CHECKING, Literal, Optional, Union
 
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.file_object import FileObject
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from tokasaurus.manager.types import SequenceOutput
 
 
 def nowstamp():
@@ -40,6 +43,9 @@ class CompletionsRequest(BaseModel):
     user: Optional[str] = None
     metadata: Optional[dict] = None
 
+    # pack the logprobs into the fingerprint in a more space-efficient way
+    logprobs_in_fingerprint: bool = False
+
     # extra fields to get sglang benchmarking script to work
     ignore_eos: bool = False
 
@@ -70,6 +76,7 @@ class ChatCompletionRequest(BaseModel):
     logprobs: Optional[bool] = False
     top_logprobs: Optional[int] = None
     max_tokens: Optional[int] = None
+    max_completion_tokens: Optional[int] = None
     n: Optional[int] = 1
     presence_penalty: Optional[float] = 0.0
     response_format: Optional[ResponseFormat] = None
@@ -82,8 +89,17 @@ class ChatCompletionRequest(BaseModel):
     user: Optional[str] = None
     metadata: Optional[dict] = None
 
-    # extra fields to get sglang benchmarking script to work
+
+    # extra fields ---
+
+    # needed for sglang benchmarking script
     ignore_eos: bool = False
+
+    # pack the logprobs into the fingerprint in a more space-efficient way
+    logprobs_in_fingerprint: bool = False
+
+    # extra chat template args, e.g. to pass enable_thinking for Qwen3 models: https://huggingface.co/Qwen/Qwen3-32B
+    apply_chat_template_overrides: Optional[dict[str, object]] = None
 
     class Config:
         extra = "forbid"
@@ -107,18 +123,7 @@ class BatchCreationRequest(BaseModel):
 @dataclass
 class RequestOutput:
     id: str
-    completion_ids: list[list[int]] = field(default_factory=list)
-    logprobs: list[list[float]] = field(default_factory=list)
-    finish_reason: list[str] = field(default_factory=list)
-    num_cached_prompt_tokens: list[int] = field(default_factory=list)
-
-    def validate_lengths(self):
-        assert (
-            len(self.completion_ids)
-            == len(self.logprobs)
-            == len(self.finish_reason)
-            == len(self.num_cached_prompt_tokens)
-        )
+    sequence_outputs: list["SequenceOutput"] = field(default_factory=list)
 
 
 @dataclass
@@ -136,6 +141,7 @@ class TokasaurusRequest:
     stop: list[str]
     n: int
     ignore_eos: bool
+    topk_logprobs: int | None = None  # Number of top tokens to return log probs for
     created_timestamp: float = field(default_factory=time.time)
 
 

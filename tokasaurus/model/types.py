@@ -27,14 +27,6 @@ class WrapperCollection:
     decode_wrapper: BatchDecodeWithPagedKVCacheWrapper | None = None
 
 
-@dataclass
-class ModelOutput:
-    schedule_id: str
-    output_tokens: list[int]
-    logprobs: list[float]
-    microbatch_index: int | None = None
-
-
 def make_ragged_tensor(data: list[list[int]]):
     flattened = []
     indptr = [0]
@@ -409,6 +401,38 @@ CommandFromManager = ModelInput | NoMoreInputs
 
 
 @dataclass
+class ModelOutputTensors:
+    output_ids: Tensor
+
+    # logprobs of the tokens that were chosen
+    chosen_logprobs: Tensor | None = None
+    topk_indices: Tensor | None = None
+    topk_logprobs: Tensor | None = None
+
+    def to(self, device: DeviceType, non_blocking: bool = False):
+        return replace(
+            self,
+            output_ids=self.output_ids.to(device, non_blocking=non_blocking),
+            chosen_logprobs=self.chosen_logprobs.to(device, non_blocking=non_blocking)
+            if self.chosen_logprobs is not None
+            else None,
+            topk_indices=self.topk_indices.to(device, non_blocking=non_blocking)
+            if self.topk_indices is not None
+            else None,
+            topk_logprobs=self.topk_logprobs.to(device, non_blocking=non_blocking)
+            if self.topk_logprobs is not None
+            else None,
+        )
+
+
+@dataclass
+class ModelOutput:
+    schedule_id: str
+    tensors: ModelOutputTensors
+    microbatch_index: int | None = None
+
+
+@dataclass
 class BatchState:
     position_ids: Tensor
     attention_info: AttentionInfo
@@ -416,15 +440,14 @@ class BatchState:
     input_ids: Tensor | None = None
     prefill_input_ids: Tensor | None = None
     lm_head_indices: Tensor | None = None
-    output_ids: Tensor | None = None
     hidden_states: Tensor | None = None
-    logprobs: Tensor | None = None
     position_embeddings: tuple[Tensor, Tensor] | None = None
     num_total_padding: int = 0
     num_lm_head_padding: int = 0
     # the unpadded/unsliced lm_head_indices, for use in updating
     # the most-recently-generated tokens map.
     raw_lm_head_indices: Tensor | None = None
+    outputs: ModelOutputTensors | None = None
 
 
 @dataclass
@@ -480,3 +503,6 @@ class ExtraModelConfig:
     torch_compile: bool = False
 
     rope_scaling: dict | None = None
+
+    enable_chosen_logprobs: bool = True
+    topk_logprobs: int | None = None

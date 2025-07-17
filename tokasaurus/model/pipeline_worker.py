@@ -12,6 +12,7 @@ from tokasaurus.model.types import (
     BatchState,
     ModelInput,
     ModelOutput,
+    ModelOutputTensors,
     NoMoreInputs,
     PipelineWorkerState,
 )
@@ -38,13 +39,11 @@ def wait_for_data_dependencies(state: PipelineWorkerState, inp: ModelInput):
         inp=inp,
         inputs_in_front=state.inflight_microbatches,
     ):
-        output_tokens = state.q_pipe_end_to_start.get()
-        handle_output_from_pipeline_end(state, output_tokens)
+        output_ids = state.q_pipe_end_to_start.get()
+        handle_output_from_pipeline_end(state, output_ids)
 
 
-def handle_output_from_pipeline_end(
-    state: PipelineWorkerState, output_tokens: list[int]
-):
+def handle_output_from_pipeline_end(state: PipelineWorkerState, output_ids: Tensor):
     assert state.batch_id_to_last_token is not None
 
     model_inp = state.inflight_microbatches.popleft()
@@ -52,13 +51,12 @@ def handle_output_from_pipeline_end(
     batch_ids_to_update = torch.tensor(
         model_inp.lm_head_batch_indices(), dtype=torch.long
     )
-    output_tokens_tensor = torch.tensor(output_tokens, dtype=torch.long)
 
-    assert batch_ids_to_update.shape == output_tokens_tensor.shape, (
-        f"batch_ids_to_update.shape={batch_ids_to_update.shape} != output_tokens_tensor.shape={output_tokens_tensor.shape}"
+    assert batch_ids_to_update.shape == output_ids.shape, (
+        f"batch_ids_to_update.shape={batch_ids_to_update.shape} != output_ids.shape={output_ids.shape}"
     )
 
-    state.batch_id_to_last_token[batch_ids_to_update] = output_tokens_tensor
+    state.batch_id_to_last_token[batch_ids_to_update] = output_ids
 
 
 def handle_outputs_to_manager(state: PipelineWorkerState):
@@ -73,19 +71,36 @@ def handle_outputs_to_manager(state: PipelineWorkerState):
     if len(state.finished_outputs) >= microbatch_total:
         to_finish = [state.finished_outputs.popleft() for _ in range(microbatch_total)]
 
-        cat_output_tokens = []
-        cat_logprobs = []
+        cat_output_tensors: list[ModelOutputTensors] = []
+
         for i, (mb_inp, mb_out) in enumerate(to_finish):
             assert mb_inp.microbatch_index == i
             assert mb_inp.schedule_id == schedule_id
             assert mb_out.schedule_id == schedule_id
 
-            cat_output_tokens.extend(mb_out.output_tokens)
-            cat_logprobs.extend(mb_out.logprobs)
+            cat_output_tensors.append(mb_out.tensors)
+
+        cat_output_tokens = torch.cat([x.output_ids for x in cat_output_tensors])
+        cat_chosen_token_logprobs = torch.cat(
+            [x.chosen_logprobs for x in cat_output_tensors]
+        )
+
+        if cat_output_tensors[0].topk_indices is not None:
+            cat_topk_indices = torch.cat([x.topk_indices for x in cat_output_tensors])  # type: ignore
+            cat_topk_logprobs = torch.cat([x.topk_logprobs for x in cat_output_tensors])  # type: ignore
+        else:
+            cat_topk_indices = None
+            cat_topk_logprobs = None
+
+        cat_tensors = ModelOutputTensors(
+            output_ids=cat_output_tokens,
+            chosen_logprobs=cat_chosen_token_logprobs,
+            topk_indices=cat_topk_indices,
+            topk_logprobs=cat_topk_logprobs,
+        )
 
         out = ModelOutput(
-            output_tokens=cat_output_tokens,
-            logprobs=cat_logprobs,
+            tensors=cat_tensors,
             schedule_id=schedule_id,
         )
 
@@ -126,8 +141,7 @@ def pipeline_worker_model_loop(
         model_input: ModelInput
         input_batch_state: BatchState
         output_batch_state: BatchState | None = None
-        output_tokens_list: list[int] | None = None
-        logprobs_cpu: Tensor | None = None
+        output_tensors_cpu: ModelOutputTensors | None = None
 
     def preprocess():
         command = state.input_q.get()
@@ -229,30 +243,26 @@ def pipeline_worker_model_loop(
             return
 
         assert work.output_batch_state is not None
-        assert work.output_batch_state.output_ids is not None
-        assert work.output_batch_state.logprobs is not None
+        assert work.output_batch_state.outputs is not None
 
         # NOTE: if there are no output tokens and these tensors are empty,
         # calling .cpu() does not actually cause a sync.
-        work.output_tokens_list = work.output_batch_state.output_ids.cpu().tolist()
-        work.logprobs_cpu = work.output_batch_state.logprobs.cpu()
+        work.output_tensors_cpu = work.output_batch_state.outputs.to("cpu")
 
         # we have to send this now (and not in postprocess) because the start of the
         # pipeline may be waiting on it to send the next batch. if this end of the
         # pipeline end worker blocks (i.e. because of a cudaMalloc) after a nccl
         # recv is launched, it will deadlock
-        state.q_pipe_end_to_start.put(work.output_tokens_list)
+        state.q_pipe_end_to_start.put(work.output_tensors_cpu.output_ids)
 
     def postprocess(work: Work):
         if pp_rank != world_size - 1 or tp_rank != 0:
             return
 
-        assert work.output_tokens_list is not None
-        assert work.logprobs_cpu is not None
+        assert work.output_tensors_cpu is not None
 
         out = ModelOutput(
-            output_tokens=work.output_tokens_list,
-            logprobs=work.logprobs_cpu.tolist(),
+            tensors=work.output_tensors_cpu,
             schedule_id=work.model_input.schedule_id,
             microbatch_index=work.model_input.microbatch_index,
         )

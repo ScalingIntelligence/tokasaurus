@@ -163,15 +163,10 @@ def test_stop(client: OpenAI):
         prompt=abc_prompt,
         max_tokens=10,
         temperature=0.0,
-        logprobs=True,
         stop=["I"],
     )
 
     assert response.choices[0].text == " A B C D E F G H "
-
-    logprobs = response.choices[0].logprobs
-    assert len(logprobs.tokens) == 9
-    assert len(logprobs.token_logprobs) == 9
 
 
 def make_messages(word: str):

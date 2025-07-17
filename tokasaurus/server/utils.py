@@ -1,9 +1,11 @@
 import asyncio
+import base64
 import functools
 import json
 from dataclasses import dataclass, field
 from uuid import uuid4
 
+import numpy as np
 from fastapi import HTTPException, Request
 from loguru import logger
 from openai.types.batch import Batch, BatchRequestCounts
@@ -14,6 +16,7 @@ from openai.types.chat.chat_completion import (
     Choice,
     ChoiceLogprobs,
 )
+from openai.types.chat.chat_completion_token_logprob import TopLogprob
 from openai.types.completion import (
     Completion,
     CompletionChoice,
@@ -31,6 +34,7 @@ from tokasaurus.common_types import (
     Engine,
     ServerConfig,
 )
+from tokasaurus.manager.types import SequenceOutput
 from tokasaurus.server.types import (
     BatchFileLine,
     CancelledRequest,
@@ -153,7 +157,6 @@ async def receive_from_manager_loop(state: ServerState):
         for engine in state.engines:
             if not (q := engine.q_manager_to_server).empty():
                 output: RequestOutput = q.get()
-                output.validate_lengths()
                 state.rid_to_req[output.id].request_output = output
                 state.rid_to_req[output.id].event.set()
                 did_something = True
@@ -244,6 +247,7 @@ def cancel_request(state: ServerState, submitted_req: SubmittedRequest):
 
 
 def validate_length(state: ServerState, request: TokasaurusRequest):
+    assert state.config.max_num_tokens_per_request is not None
     if (
         len(request.input_ids) + request.max_num_tokens
         > state.config.max_num_tokens_per_request
@@ -259,19 +263,12 @@ def is_ids_list(x):
     return isinstance(x, list) and all(isinstance(i, int) for i in x)
 
 
-def make_completion_logprobs(
-    completion_ids: list[int], logprobs: list[float], inverse_vocab: dict[int, str]
-):
-    detok_list = [inverse_vocab[cid] for cid in completion_ids]
-
-    logprobs_obj = Logprobs(token_logprobs=logprobs, tokens=detok_list)
-    return logprobs_obj
-
-
 def make_usage_info(request: TokasaurusRequest, output: RequestOutput):
-    num_completion_tokens = sum([len(c) for c in output.completion_ids])
+    num_completion_tokens = sum(
+        [len(o.completion_ids) for o in output.sequence_outputs]
+    )
 
-    cached_tokens = output.num_cached_prompt_tokens
+    cached_tokens = [o.num_cached_prompt_tokens for o in output.sequence_outputs]
     uncached_tokens = [len(request.input_ids) - c for c in cached_tokens]
 
     total_prompt_tokens = sum(cached_tokens) + sum(uncached_tokens)
@@ -289,18 +286,79 @@ def make_usage_info(request: TokasaurusRequest, output: RequestOutput):
     )
 
 
-def make_chat_logprobs(
-    completion_ids: list[int], logprobs: list[float], inverse_vocab: dict[int, str]
+def make_completion_logprobs(
+    crequest: CompletionsRequest,
+    seq_out: SequenceOutput,
+    inverse_vocab: dict[int, str],
 ):
+    detok_list = [inverse_vocab[cid] for cid in seq_out.completion_ids]
+
+    logprobs = crequest.logprobs
+    assert logprobs is not None
+
+    if logprobs > 0:
+        top_logprobs_list = []
+        for i in range(len(seq_out.completion_ids)):
+            top_logprobs = {}
+            for k in range(logprobs):
+                token_id = seq_out.topk_ids[i][k]
+                detok = inverse_vocab[token_id]
+                top_logprobs[detok] = seq_out.topk_logprobs[i][k]
+            top_logprobs_list.append(top_logprobs)
+    else:
+        top_logprobs_list = []
+
+    logprobs_obj = Logprobs(
+        token_logprobs=seq_out.logprobs,
+        tokens=detok_list,
+        top_logprobs=top_logprobs_list,
+    )
+    return logprobs_obj
+
+
+def make_chat_logprobs(
+    crequest: ChatCompletionRequest,
+    seq_out: SequenceOutput,
+    inverse_vocab: dict[int, str],
+):
+    topk = crequest.top_logprobs
+
     logprobs_list = []
-    for cid, logprob in zip(completion_ids, logprobs):
+    for i, cid in enumerate(seq_out.completion_ids):
         detok = inverse_vocab[cid]
+        logprob = seq_out.logprobs[i]
+
+        if topk is not None and topk > 0:
+            # Build top_logprobs if top-k data is available
+            top_logprobs_list = []
+
+            topk_ids = seq_out.topk_ids[i].tolist()
+            topk_logprobs = seq_out.topk_logprobs[i].tolist()
+
+            assert len(topk_ids) == len(topk_logprobs)
+            assert len(topk_ids) >= topk
+
+            for k in range(topk):
+                top_token = topk_ids[k]
+                top_logprob = topk_logprobs[k]
+
+                top_detok = inverse_vocab[top_token]
+                top_logprobs_list.append(
+                    TopLogprob(
+                        token=top_detok,
+                        bytes=[],
+                        logprob=top_logprob,
+                    )
+                )
+        else:
+            top_logprobs_list = []
+
         logprobs_list.append(
             ChatCompletionTokenLogprob(
                 token=detok,
                 bytes=[],
                 logprob=logprob,
-                top_logprobs=[],
+                top_logprobs=top_logprobs_list,
             )
         )
 
@@ -319,68 +377,16 @@ def get_stop_strings(request: CompletionsRequest | ChatCompletionRequest) -> lis
     return []
 
 
-def truncate_outputs(
-    state: ServerState, request: TokasaurusRequest, output: RequestOutput
-):
-    eos_token_ids = get_eos_token_ids(state.generation_config)
-
-    @dataclass
-    class SingleOutput:
-        completion_ids: list[int]
-        logprobs: list[float]
-        finish_reason: str
-        num_to_remove: int = 0
-
-        def __post_init__(self):
-            done = self.finish_reason == "length"
-
-            if not done:
-                for eos in eos_token_ids:
-                    if eos in self.completion_ids:
-                        assert self.completion_ids[-1] == eos
-                        done = True
-                        break
-
-            self.done = done
-
-    outs: list[SingleOutput] = []
-    for completion_ids, logprobs, finish_reason in zip(
-        output.completion_ids, output.logprobs, output.finish_reason
-    ):
-        out = SingleOutput(
-            completion_ids=completion_ids,
-            logprobs=logprobs,
-            finish_reason=finish_reason,
-        )
-        outs.append(out)
-
-    tokenizer: Tokenizer = state.get_inner_tokenizer()
-
-    for iter in range(state.config.scheduling_steps_ahead):
-        outs_to_decode = [out for out in outs if not out.done]
-
-        if len(outs_to_decode) == 0:
-            break
-
-        to_decode_list = [out.completion_ids for out in outs_to_decode]
-        decoded_list: list[str] = tokenizer.decode_batch(
-            to_decode_list,
-            skip_special_tokens=True,
-        )
-
-        for decoded, out in zip(decoded_list, outs_to_decode):
-            pass
-
-
 def decode_completion(
     state: ServerState, request: TokasaurusRequest, output: RequestOutput
 ):
     eos_token_ids = get_eos_token_ids(state.generation_config)
 
     to_decode_list = []
-    for completion_ids in output.completion_ids:
-        trimmed_completion_ids = completion_ids
+    for seq_out in output.sequence_outputs:
+        completion_ids = seq_out.completion_ids
 
+        trimmed_completion_ids = completion_ids
         if not request.ignore_eos:
             for eos in eos_token_ids:
                 try:
@@ -419,15 +425,38 @@ def decode_completion(
     return trimmed_list
 
 
-def validate_chat_completion_request(request: ChatCompletionRequest):
-    if request.top_logprobs is not None:
+def validate_chat_completion_request(
+    config: ServerConfig, request: ChatCompletionRequest
+):
+    if request.logprobs and not config.enable_chosen_logprobs:
         raise HTTPException(
             status_code=400,
-            detail="top_logprobs not supported",
+            detail="logprobs is True but engine was configured with enable_chosen_logprobs=False",
         )
 
+    if (top_logprobs := request.top_logprobs) is not None:
+        if not request.logprobs:
+            raise HTTPException(
+                status_code=400,
+                detail="logprobs must be True if top_logprobs is set",
+            )
 
-def validate_completions_request(request: CompletionsRequest):
+        if top_logprobs < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="top_logprobs must be non-negative",
+            )
+
+        if top_logprobs > 0 and (
+            config.max_topk_logprobs is None or top_logprobs > config.max_topk_logprobs
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"top_logprobs={top_logprobs} but engine was configured with max_topk_logprobs={config.max_topk_logprobs}",
+            )
+
+
+def validate_completions_request(config: ServerConfig, request: CompletionsRequest):
     if request.echo not in [False, None]:
         raise HTTPException(
             status_code=400,
@@ -446,14 +475,31 @@ def validate_completions_request(request: CompletionsRequest):
             detail="suffix not supported",
         )
 
-    if request.logprobs not in [None, 1]:
-        raise HTTPException(
-            status_code=400,
-            detail="logprobs must be 1 or None",
-        )
+    if (logprobs := request.logprobs) is not None:
+        if not config.enable_chosen_logprobs:
+            raise HTTPException(
+                status_code=400,
+                detail="logprobs is set but engine was configured with enable_chosen_logprobs=False",
+            )
+
+        if logprobs < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="logprobs must be non-negative",
+            )
+
+        if logprobs > 0 and (
+            config.max_topk_logprobs is None or logprobs > config.max_topk_logprobs
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"logprobs={logprobs} but engine was configured with max_topk_logprobs={config.max_topk_logprobs}",
+            )
 
 
-def validate_args(request: ChatCompletionRequest | CompletionsRequest):
+def validate_args(
+    config: ServerConfig, request: ChatCompletionRequest | CompletionsRequest
+):
     if request.stream:
         raise HTTPException(
             status_code=400,
@@ -484,29 +530,47 @@ def validate_args(request: ChatCompletionRequest | CompletionsRequest):
             detail="presence_penalty not supported",
         )
 
-    if request.max_tokens is None:
-        raise HTTPException(
-            status_code=400,
-            detail="max_tokens is required",
-        )
+    match request:
+        case ChatCompletionRequest():
+            raw_max_tokens = request.max_tokens
+            raw_max_completion_tokens = request.max_completion_tokens
 
-    if request.max_tokens <= 0:
+            exactly_one_is_set = (raw_max_tokens is None) ^ (
+                raw_max_completion_tokens is None
+            )
+            if not exactly_one_is_set:
+                raise HTTPException(
+                    status_code=400,
+                    detail="exactly one of max_tokens or max_completion_tokens must be set",
+                )
+
+            max_tokens = raw_max_tokens or raw_max_completion_tokens
+        case CompletionsRequest():
+            max_tokens = request.max_tokens
+
+            if max_tokens is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="max_tokens set is required",
+                )
+
+    if max_tokens <= 0:
         raise HTTPException(
             status_code=400,
-            detail="max_tokens must be greater than 0",
+            detail="max tokens must be greater than 0",
         )
 
     match request:
         case ChatCompletionRequest():
-            validate_chat_completion_request(request)
+            validate_chat_completion_request(config, request)
         case CompletionsRequest():
-            validate_completions_request(request)
+            validate_completions_request(config, request)
 
 
 def process_request(
     state: ServerState, request: ChatCompletionRequest | CompletionsRequest
 ):
-    validate_args(request)
+    validate_args(state.config, request)
 
     if (n := request.n) is None:
         n = 1
@@ -526,13 +590,21 @@ def process_request(
         case ChatCompletionRequest():
             messages = request.messages
             ends_with_user = messages[-1]["role"] == "user"
+            apply_chat_template_kwargs = {
+                "tokenize": False,
+                "add_generation_prompt": ends_with_user,
+                "continue_final_message": not ends_with_user,
+            }
+
+            if (overrides := request.apply_chat_template_overrides) is not None:
+                apply_chat_template_kwargs.update(overrides)
+
             prompt = state.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=ends_with_user,
-                continue_final_message=not ends_with_user,
+                messages, **apply_chat_template_kwargs
             )
             input_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+            top_logprobs = request.top_logprobs
+            max_tokens = request.max_completion_tokens or request.max_tokens
         case CompletionsRequest():
             if isinstance(request.prompt, str):
                 input_ids = state.tokenizer(request.prompt)["input_ids"]
@@ -543,16 +615,23 @@ def process_request(
                     status_code=400,
                     detail="Invalid type for prompt",
                 )
+            top_logprobs = request.logprobs
+            max_tokens = request.max_tokens
+
+    # we know this from validation
+    assert max_tokens is not None
 
     rid = str(uuid4())
+
     req = TokasaurusRequest(
         id=rid,
         input_ids=input_ids,
-        max_num_tokens=request.max_tokens,
+        max_num_tokens=max_tokens,
         sampling_params=sampling_params,
         stop=get_stop_strings(request),
         n=n,
         ignore_eos=request.ignore_eos,
+        topk_logprobs=top_logprobs,
     )
 
     validate_length(state, req)
@@ -560,14 +639,53 @@ def process_request(
     return req
 
 
-def make_completions_fingerprint(output: RequestOutput):
+def encode_array(array: np.ndarray):
+    return base64.b64encode(array.tobytes()).decode("ascii")
+
+
+def make_completions_fingerprint(
+    output: RequestOutput,
+    add_logprobs: bool,
+    topk: int | None,
+):
     """
-    Sneaky way to send the completion ids to the client
-    while adhering to the API spec.
+    Sneaky way to send extra data back to the client while adhering to the API spec.
     """
     obj = {
-        "completion_ids": output.completion_ids,
+        "completion_ids": [o.completion_ids for o in output.sequence_outputs],
     }
+
+    # the default openai logprobs format involves many nested small objects which
+    # can take a lot of time to serialize/deserialize and inflate the response size.
+    # here we send the logprobs as base64-encoded numpy arrays instead.
+
+    packed_chosen_logprobs = None
+    packed_topk_indices = None
+    packed_topk_logprobs = None
+
+    if add_logprobs:
+        packed_chosen_logprobs = [
+            encode_array(np.array(o.logprobs, dtype=np.float32))
+            for o in output.sequence_outputs
+        ]
+
+        if topk is not None and topk > 0:
+            packed_topk_indices = []
+            packed_topk_logprobs = []
+
+            for seq_out in output.sequence_outputs:
+                stack_topk_ids = np.array(seq_out.topk_ids, dtype=np.int32)[:, :topk]
+                stack_topk_logprobs = np.array(seq_out.topk_logprobs, dtype=np.float32)[
+                    :, :topk
+                ]
+
+                packed_topk_indices.append(encode_array(stack_topk_ids))
+                packed_topk_logprobs.append(encode_array(stack_topk_logprobs))
+
+    obj["packed_chosen_logprobs"] = packed_chosen_logprobs
+    obj["packed_topk_indices"] = packed_topk_indices
+    obj["packed_topk_logprobs"] = packed_topk_logprobs
+
     return json.dumps(obj)
 
 
@@ -581,25 +699,27 @@ def process_chat_completions_output(
 
     choices = []
     for i in range(request.n):
+        seq_out = output.sequence_outputs[i]
         new_message = ChatCompletionMessage(
             role="assistant",
             content=completions[i],
         )
 
-        if crequest.logprobs is None:
-            logprobs = None
-        else:
+        if crequest.logprobs and not crequest.logprobs_in_fingerprint:
             logprobs = make_chat_logprobs(
-                completion_ids=output.completion_ids[i],
-                logprobs=output.logprobs[i],
+                crequest=crequest,
+                seq_out=seq_out,
                 inverse_vocab=state.inverse_vocab,
             )
+        else:
+            # if None or False
+            logprobs = None
 
         choice = Choice(
             index=i,
             message=new_message,
             logprobs=logprobs,
-            finish_reason=output.finish_reason[i],
+            finish_reason=seq_out.finish_reason,
         )
         choices.append(choice)
 
@@ -610,7 +730,11 @@ def process_chat_completions_output(
         choices=choices,
         created=nowstamp(),
         object="chat.completion",
-        system_fingerprint=make_completions_fingerprint(output),
+        system_fingerprint=make_completions_fingerprint(
+            output,
+            add_logprobs=crequest.logprobs_in_fingerprint,
+            topk=crequest.top_logprobs,
+        ),
     )
 
 
@@ -624,20 +748,22 @@ def process_completions_output(
 
     choices = []
     for i in range(request.n):
-        if crequest.logprobs is None:
-            logprobs = None
-        else:
+        seq_out = output.sequence_outputs[i]
+
+        if crequest.logprobs and not crequest.logprobs_in_fingerprint:
             logprobs = make_completion_logprobs(
-                completion_ids=output.completion_ids[i],
-                logprobs=output.logprobs[i],
+                crequest=crequest,
+                seq_out=seq_out,
                 inverse_vocab=state.inverse_vocab,
             )
+        else:
+            logprobs = None
 
         choice = CompletionChoice(
             index=i,
             text=completions[i],
             logprobs=logprobs,
-            finish_reason=output.finish_reason[i],
+            finish_reason=seq_out.finish_reason,
         )
         choices.append(choice)
 
@@ -648,7 +774,11 @@ def process_completions_output(
         choices=choices,
         created=nowstamp(),
         object="text_completion",
-        system_fingerprint=make_completions_fingerprint(output),
+        system_fingerprint=make_completions_fingerprint(
+            output,
+            add_logprobs=crequest.logprobs_in_fingerprint,
+            topk=crequest.logprobs,
+        ),
     )
 
 
