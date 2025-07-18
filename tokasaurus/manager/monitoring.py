@@ -244,6 +244,9 @@ class StatsTracker:
 
             stats["hydragen_sharing_frac"] = frac
 
+        else:
+            stats["hydragen_sharing_frac"] = 0.0
+
         return stats
 
     def is_initialized(self):
