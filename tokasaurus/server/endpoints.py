@@ -28,6 +28,7 @@ from tokasaurus.server.types import (
     SubmittedBatchItem,
     CartridgeCompletionsRequest,
     CartridgeChatCompletionRequest,
+    BatchCartridgeChatCompletionsRequest,
     nowstamp,
 )
 from tokasaurus.server.utils import (
@@ -80,21 +81,6 @@ async def oai_chat_completions(request: ChatCompletionRequest, raw_request: Requ
     req, out = await generate_output(state, request)
     return process_chat_completions_output(state, request, req, out)
 
-
-@app.post("/v1/cartridge/completions")
-@with_cancellation
-async def cartridge_completions(request: CartridgeCompletionsRequest, raw_request: Request):
-    state: ServerState = app.state.state_bundle
-    req, out = await generate_output(state, request)
-    return process_completions_output(state, request, req, out)
-
-
-@app.post("/v1/cartridge/chat/completions")
-@with_cancellation
-async def cartridge_chat_completions(request: CartridgeChatCompletionRequest, raw_request: Request):
-    state: ServerState = app.state.state_bundle
-    req, out = await generate_output(state, request)
-    return process_cartridge_chat_completions_output(state, request, req, out)
 
 
 @app.post("/v1/files", response_model=FileObject)
@@ -284,6 +270,54 @@ async def synchronous_batch_completions(request: BatchCompletionsRequest, raw_re
     )
     
     # return {"completions": pickle.dumps(results)}
+
+
+@app.post("/v1/cartridge/completions")
+@with_cancellation
+async def cartridge_completions(request: CartridgeCompletionsRequest, raw_request: Request):
+    state: ServerState = app.state.state_bundle
+    req, out = await generate_output(state, request)
+    return process_completions_output(state, request, req, out)
+
+
+@app.post("/v1/cartridge/chat/completions")
+@with_cancellation
+async def cartridge_chat_completions(request: CartridgeChatCompletionRequest, raw_request: Request):
+    state: ServerState = app.state.state_bundle
+    req, out = await generate_output(state, request)
+    return process_cartridge_chat_completions_output(state, request, req, out)
+
+
+@app.post("/batch/cartridge/chat/completions")
+@with_cancellation
+async def cartridge_synchronous_chat_completions(request: BatchCartridgeChatCompletionsRequest, raw_request: Request):
+    state: ServerState = app.state.state_bundle
+    t0 = time.time()
+    async def generate_and_process(req: CartridgeChatCompletionRequest):
+        internal_req, output = await generate_output(state, req)
+        return process_cartridge_chat_completions_output(state, req, internal_req, output)
+    
+    # Create tasks for each request
+    tasks = [asyncio.create_task(generate_and_process(req)) for req in request.requests]
+    
+    # Wait for all tasks to complete and collect results in order
+    results = await asyncio.gather(*tasks)
+    t1 = time.time()
+    print(f"synchronous_batch_completions took {t1 - t0} seconds")
+
+    # return {"completions": results}
+
+    pickled_content = pickle.dumps(results)
+    return Response(
+        content=pickled_content, media_type="application/octet-stream"
+    )
+
+
+
+
+
+
+
 
 ### ------------------------------------------------------------
 ### END NON-OAI ENDPOINTS

@@ -503,7 +503,6 @@ class CartridgeManager:
             )
         
         expected_blocks = total_tokens // self.page_size
-        print(f"Expected blocks: {expected_blocks}, block indices: {len(block_indices)}, total tokens: {total_tokens}")
         if len(block_indices) != expected_blocks:
             raise ValueError(f"Block indices length ({len(block_indices)}) doesn't match expected blocks ({expected_blocks})")
         
