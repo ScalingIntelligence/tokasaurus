@@ -3,6 +3,7 @@ import base64
 import functools
 import json
 from dataclasses import dataclass, field
+import time
 from uuid import uuid4
 
 import numpy as np
@@ -726,7 +727,9 @@ def make_completions_fingerprint(
     obj["packed_topk_indices"] = packed_topk_indices
     obj["packed_topk_logprobs"] = packed_topk_logprobs
 
-    return json.dumps(obj)
+    out = json.dumps(obj)
+
+    return out
 
 
 def process_chat_completions_output(
@@ -820,7 +823,7 @@ def process_cartridge_chat_completions_output(
         )
         choices.append(choice)
 
-    return ChatCompletion(
+    return dict(
         id=request.id,
         model=crequest.model,
         usage=make_usage_info(request, output),
