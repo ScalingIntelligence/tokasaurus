@@ -425,6 +425,25 @@ class CartridgeManager:
             state_dict = torch.load(cartridge_path, map_location=self.model.device, weights_only=False)
         except FileNotFoundError:
             raise FileNotFoundError(f"Cartridge file not found: {cartridge_path}")
+
+        if "frozen_keys" in state_dict:
+            state_dict["fixed_keys"] = state_dict["frozen_keys"]
+            state_dict["fixed_values"] = state_dict["frozen_values"]
+            del state_dict["frozen_keys"]
+            del state_dict["frozen_values"]
+        
+        num_fixed = state_dict["fixed_keys"][0].shape[2]
+        num_trainable = state_dict["trainable_keys"][0].shape[2]
+        if (num_fixed + num_trainable) % self.page_size != 0:
+            self.logger.warning(f"Cartridge {cartridge_id} has {num_fixed} fixed tokens and {num_trainable} trainable tokens, which is not divisible by page size {self.page_size}. Truncating trainable tokens to make it divisible.")
+            state_dict["trainable_keys"] = [
+                key[:, :, :-((num_fixed + num_trainable) % self.page_size)]
+                for key in state_dict["trainable_keys"]
+            ]
+            state_dict["trainable_values"] = [
+                value[:, :, :-((num_fixed + num_trainable) % self.page_size)]
+                for value in state_dict["trainable_values"]
+            ]
         
         # Validate state dict structure
         required_keys = ["trainable_keys", "trainable_values", "fixed_keys", "fixed_values"]
@@ -476,6 +495,7 @@ class CartridgeManager:
         
         # Assert total tokens is divisible by page_size
         if total_tokens % self.page_size != 0:
+            
             raise ValueError(
                 f"Total cartridge tokens ({total_tokens} = {num_trainable_tokens} trainable + {num_fixed_tokens} fixed) "
                 f"must be divisible by page_size ({self.page_size}). "
@@ -483,6 +503,7 @@ class CartridgeManager:
             )
         
         expected_blocks = total_tokens // self.page_size
+        print(f"Expected blocks: {expected_blocks}, block indices: {len(block_indices)}, total tokens: {total_tokens}")
         if len(block_indices) != expected_blocks:
             raise ValueError(f"Block indices length ({len(block_indices)}) doesn't match expected blocks ({expected_blocks})")
         
