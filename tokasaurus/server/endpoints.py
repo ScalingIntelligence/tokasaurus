@@ -238,15 +238,17 @@ async def retrieve_batch(
 
 @app.get("/v1/models")
 async def list_models():
+    state: ServerState = app.state.state_bundle
+
     return SyncPage(
         object="list",
         data=[
             Model(
-                id="default",
+                id=state.config.model,
                 created=nowstamp(),
                 object="model",
                 owned_by="tokasaurus",
-            )
+            ),
         ],
     )
 
