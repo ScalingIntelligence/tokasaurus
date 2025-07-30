@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tokasaurus"
-version = "0.0.2"
+version = "0.0.3.post1"
 description = "The little (LLM) engine that could!"
 readme = "README.md"
 requires-python = ">=3.10"
