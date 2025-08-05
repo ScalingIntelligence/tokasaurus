@@ -11,7 +11,7 @@ from transformers import AutoConfig
 
 from tokasaurus.utils import sanitize_cartridge_id
 
-WANDB_PROJECT_ID = "capsules"
+WANDB_PROJECT_ID = "cartridges"
 
 def _verify_cartridge_data(cartridge_file: Path, logger):
     """
