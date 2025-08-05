@@ -54,7 +54,7 @@ from tokasaurus.server.types import (
 from tokasaurus.utils import get_eos_token_ids
 
 
-CARTRIDGE_TEMPLATE = """\
+LLAMA_CARTRIDGE_TEMPLATE = """\
 {%- for message in messages %}
     {%- if  (message.role == 'assistant') %}
         {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' }}{% generation %}{{- message['content'] | trim + '<|eot_id|>' }}{% endgeneration %}
@@ -631,13 +631,16 @@ def process_request(
             
             if isinstance(request, CartridgeChatCompletionRequest):
                 cartridges = request.cartridges
-                apply_chat_template_kwargs["chat_template"] = CARTRIDGE_TEMPLATE
+                if "llama" in state.tokenizer.name_or_path:
+                    apply_chat_template_kwargs["chat_template"] = LLAMA_CARTRIDGE_TEMPLATE
+                    
             else:
                 cartridges = None
 
             prompt = state.tokenizer.apply_chat_template(
                 messages, **apply_chat_template_kwargs
             )
+            print(prompt)
             input_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
             top_logprobs = request.top_logprobs
             max_tokens = request.max_completion_tokens or request.max_tokens

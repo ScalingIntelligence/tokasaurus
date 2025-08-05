@@ -11,6 +11,7 @@ from transformers import AutoConfig
 
 from tokasaurus.utils import sanitize_cartridge_id
 
+WANDB_PROJECT_ID = "capsules"
 
 def _verify_cartridge_data(cartridge_file: Path, logger):
     """
@@ -113,10 +114,10 @@ def download_cartridge_from_wandb(cartridge_id: str, cartridges_path: Path, forc
     try:
         # NOTE: hardcoded project. This might need to be configurable in the future.
         # Use original cartridge_id for API call, not sanitized version
-        run = api.run(f"hazy-research/cartridges/{cartridge_id}")
+        run = api.run(f"hazy-research/{WANDB_PROJECT_ID}/{cartridge_id}")
     except wandb.errors.CommError as e:
-        logger.error(f"Could not find wandb run for cartridge_id: hazy-research/cartridges/{cartridge_id}. Error: {e}")
-        raise FileNotFoundError(f"Could not find wandb run for cartridge_id: hazy-research/cartridges/{cartridge_id}") from e
+        logger.error(f"Could not find wandb run for cartridge_id: hazy-research/{WANDB_PROJECT_ID}/{cartridge_id}. Error: {e}")
+        raise FileNotFoundError(f"Could not find wandb run for cartridge_id: hazy-research/{WANDB_PROJECT_ID}/{cartridge_id}") from e
 
     # Find the cartridge file
     pt_files = [f for f in run.files() if f.name.endswith(".pt")]
@@ -128,6 +129,8 @@ def download_cartridge_from_wandb(cartridge_id: str, cartridges_path: Path, forc
         logger.warning(f"Multiple .pt files found in wandb run {cartridge_id}, using most recent file: {pt_files[0].name}")
 
     wandb_file_name = pt_files[0].name
+    if cartridge_id == "2o672jhw":
+        wandb_file_name = "cache-step512.pt"
 
     # Find the config.yaml file
     config_files = [f for f in run.files() if f.name == "config.yaml"]
@@ -317,12 +320,12 @@ def validate_cartridge_exists(cartridge_id: str, source: str, logger=None):
             api = wandb.Api()
             try:
                 # Use original cartridge_id for API call
-                run = api.run(f"hazy-research/cartridges/{cartridge_id}")
+                run = api.run(f"hazy-research/{WANDB_PROJECT_ID}/{cartridge_id}")
                 # Just check if we can access the run - don't download anything
                 logger.debug(f"Cartridge {cartridge_id} exists in wandb")
             except wandb.errors.CommError as e:
-                logger.error(f"Could not find wandb run for cartridge_id: hazy-research/cartridges/{cartridge_id}. Error: {e}")
-                raise FileNotFoundError(f"Could not find wandb run for cartridge_id: hazy-research/cartridges/{cartridge_id}") from e
+                logger.error(f"Could not find wandb run for cartridge_id: hazy-research/{WANDB_PROJECT_ID}/{cartridge_id}. Error: {e}")
+                raise FileNotFoundError(f"Could not find wandb run for cartridge_id: hazy-research/{WANDB_PROJECT_ID}/{cartridge_id}") from e
                 
         case "huggingface":
             # Quick check if HuggingFace repository exists

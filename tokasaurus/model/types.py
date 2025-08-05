@@ -436,6 +436,7 @@ class CartridgeManager:
         num_trainable = state_dict["trainable_keys"][0].shape[2]
         if (num_fixed + num_trainable) % self.page_size != 0:
             self.logger.warning(f"Cartridge {cartridge_id} has {num_fixed} fixed tokens and {num_trainable} trainable tokens, which is not divisible by page size {self.page_size}. Truncating trainable tokens to make it divisible.")
+            
             state_dict["trainable_keys"] = [
                 key[:, :, :-((num_fixed + num_trainable) % self.page_size)]
                 for key in state_dict["trainable_keys"]
@@ -444,7 +445,7 @@ class CartridgeManager:
                 value[:, :, :-((num_fixed + num_trainable) % self.page_size)]
                 for value in state_dict["trainable_values"]
             ]
-        
+            
         # Validate state dict structure
         required_keys = ["trainable_keys", "trainable_values", "fixed_keys", "fixed_values"]
         missing_keys = [key for key in required_keys if key not in state_dict]
