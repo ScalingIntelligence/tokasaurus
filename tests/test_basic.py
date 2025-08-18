@@ -276,7 +276,7 @@ def test_batch_chat_completions(client: OpenAI):
     assert custom_id_to_parsed["request-2"].choices[0].message.content == "howdy"
 
 
-def test_batch_completions_endpoint(client: OpenAI):
+def test_synchronous_batch_completions(client: OpenAI):
     import requests
     
     # Test synchronous batch completions endpoint
@@ -313,19 +313,15 @@ def test_batch_completions_endpoint(client: OpenAI):
     )
     
     assert response.status_code == 200
-    result = response.json()
-    
+    import pickle
+    result = pickle.loads(response.content)
+        
     # Verify response structure
-    assert "completions" in result
-    assert len(result["completions"]) == 3
+    assert len(result) == 3
     
     # Verify each completion
-    completions = result["completions"]
-    assert completions[0]["choices"][0]["message"]["content"] == "hello"
-    assert completions[1]["choices"][0]["message"]["content"] == "world"
-    assert completions[2]["choices"][0]["message"]["content"] == "test"
+    completions = result
+    assert completions[0]["choices"][0].message.content == "hello"
+    assert completions[1]["choices"][0].message.content == "world"
+    assert completions[2]["choices"][0].message.content == "test"
     
-    # Verify results are in correct order
-    expected_words = ["hello", "world", "test"]
-    for i, completion in enumerate(completions):
-        assert completion["choices"][0]["message"]["content"] == expected_words[i]

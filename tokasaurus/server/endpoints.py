@@ -253,15 +253,11 @@ async def synchronous_batch_completions(request: BatchCompletionsRequest, raw_re
     t1 = time.time()
     print(f"synchronous_batch_completions took {t1 - t0} seconds")
 
-    # return {"completions": results}
-
     pickled_content = pickle.dumps(results)
     return Response(
         content=pickled_content, media_type="application/octet-stream"
     )
     
-    # return {"completions": pickle.dumps(results)}
-
 ### ------------------------------------------------------------
 ### END NON-OAI ENDPOINTS
 ### ------------------------------------------------------------
