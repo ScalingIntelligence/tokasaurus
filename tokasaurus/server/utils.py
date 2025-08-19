@@ -686,7 +686,9 @@ def make_completions_fingerprint(
     obj["packed_topk_indices"] = packed_topk_indices
     obj["packed_topk_logprobs"] = packed_topk_logprobs
 
-    return json.dumps(obj)
+    out = json.dumps(obj)
+
+    return out
 
 
 def process_chat_completions_output(

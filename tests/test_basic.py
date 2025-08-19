@@ -1,11 +1,13 @@
 import json
 import os
+import pickle
 import shlex
 import tempfile
 import time
 
 import pydra
 import pytest
+import requests
 import torch
 import torch.multiprocessing as mp
 from openai import OpenAI
@@ -274,3 +276,50 @@ def test_batch_chat_completions(client: OpenAI):
 
     assert custom_id_to_parsed["request-1"].choices[0].message.content == "hello"
     assert custom_id_to_parsed["request-2"].choices[0].message.content == "howdy"
+
+
+def test_synchronous_batch_completions(client: OpenAI):
+    # Test synchronous batch completions endpoint
+    batch_request = {
+        "requests": [
+            {
+                "model": MODEL,
+                "messages": make_messages("hello"),
+                "max_tokens": 20,
+                "temperature": 0.0,
+            },
+            {
+                "model": MODEL,
+                "messages": make_messages("world"),
+                "max_tokens": 20,
+                "temperature": 0.0,
+            },
+            {
+                "model": MODEL,
+                "messages": make_messages("test"),
+                "max_tokens": 20,
+                "temperature": 0.0,
+            },
+        ]
+    }
+
+    # Make request to our custom endpoint
+    url = (
+        str(client.base_url).split("/v1")[0] + "/custom/synchronous-batch-completions"
+    )  # update the path
+
+    response = requests.post(url, json=batch_request)
+
+    assert response.status_code == 200
+
+    result = pickle.loads(response.content)
+
+    # Verify response structure
+    assert len(result) == 3
+
+    # Verify each completion
+    completions = result
+
+    assert completions[0].choices[0].message.content == "hello"
+    assert completions[1].choices[0].message.content == "world"
+    assert completions[2].choices[0].message.content == "test"
