@@ -89,7 +89,6 @@ class ChatCompletionRequest(BaseModel):
     user: Optional[str] = None
     metadata: Optional[dict] = None
 
-
     # extra fields ---
 
     # needed for sglang benchmarking script
@@ -120,7 +119,7 @@ class BatchCreationRequest(BaseModel):
     metadata: Optional[dict[str, str]] = Field(default=None)
 
 
-class BatchCompletionsRequest(BaseModel):
+class SynchronousBatchCompletionsRequest(BaseModel):
     """Request model for synchronous batch completions"""
 
     requests: list[ChatCompletionRequest] = Field(

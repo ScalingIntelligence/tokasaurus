@@ -1,7 +1,6 @@
 import asyncio
-from contextlib import asynccontextmanager
 import pickle
-import time
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import uvicorn
@@ -18,7 +17,6 @@ from tokasaurus.common_types import (
     TimedBarrier,
 )
 from tokasaurus.server.types import (
-    BatchCompletionsRequest,
     BatchCreationRequest,
     BatchFileLine,
     ChatCompletionRequest,
@@ -26,6 +24,7 @@ from tokasaurus.server.types import (
     FileEntry,
     SubmittedBatch,
     SubmittedBatchItem,
+    SynchronousBatchCompletionsRequest,
     nowstamp,
 )
 from tokasaurus.server.utils import (
@@ -232,37 +231,36 @@ async def list_models():
         ],
     )
 
+
 ### ------------------------------------------------------------
 ### BEGIN NON-OAI ENDPOINTS
 ### ------------------------------------------------------------
 
-@app.post("/batch/chat/completions")
+
+@app.post("/custom/synchronous-batch-completions")
 @with_cancellation
-async def synchronous_batch_completions(request: BatchCompletionsRequest, raw_request: Request):
+async def synchronous_batch_completions(
+    request: SynchronousBatchCompletionsRequest, raw_request: Request
+):
     state: ServerState = app.state.state_bundle
-    t0 = time.time()
+
     async def generate_and_process(req: ChatCompletionRequest):
         internal_req, output = await generate_output(state, req)
         return process_chat_completions_output(state, req, internal_req, output)
-    
+
     # Create tasks for each request
     tasks = [asyncio.create_task(generate_and_process(req)) for req in request.requests]
-    
+
     # Wait for all tasks to complete and collect results in order
     results = await asyncio.gather(*tasks)
-    t1 = time.time()
-    print(f"synchronous_batch_completions took {t1 - t0} seconds")
 
     pickled_content = pickle.dumps(results)
-    return Response(
-        content=pickled_content, media_type="application/octet-stream"
-    )
-    
+    return Response(content=pickled_content, media_type="application/octet-stream")
+
+
 ### ------------------------------------------------------------
 ### END NON-OAI ENDPOINTS
 ### ------------------------------------------------------------
-
-
 
 
 def start_server(

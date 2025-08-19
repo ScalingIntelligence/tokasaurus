@@ -3,7 +3,6 @@ import base64
 import functools
 import json
 from dataclasses import dataclass, field
-import time
 from uuid import uuid4
 
 import numpy as np
@@ -726,7 +725,7 @@ def process_chat_completions_output(
         )
         choices.append(choice)
 
-    return dict(
+    return ChatCompletion(
         id=request.id,
         model=crequest.model,
         usage=make_usage_info(request, output),
