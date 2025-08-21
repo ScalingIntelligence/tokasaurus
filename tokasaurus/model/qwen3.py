@@ -124,12 +124,11 @@ class Qwen3Attention(LlamaAttention):
             attn_output = attn_output[batch_state.lm_head_indices]
             residual = residual[batch_state.lm_head_indices]
 
-        attn_output = reduce_scatter(attn_output, self.extra_config)
+        o_proj = self.o_proj(attn_output)
 
-        output = self.o_proj(attn_output)
-        output = output.to(dtype)
+        o_proj = reduce_scatter(o_proj, self.extra_config)
 
-        with_residual = residual + output
+        with_residual = residual + o_proj
 
         batch_state.hidden_states = with_residual
         return batch_state

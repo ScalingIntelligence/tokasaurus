@@ -1,11 +1,13 @@
 import json
 import os
+import pickle
 import shlex
 import tempfile
 import time
 
 import pydra
 import pytest
+import requests
 import torch
 import torch.multiprocessing as mp
 from openai import OpenAI
@@ -79,6 +81,7 @@ def client(request):
     config: ServerConfig = request.param
     print(f"Launching server with config: {config.to_dict()}")
 
+    print(f"Launching server with config: {config.to_dict()}")
     with server_manager(config):
         client = OpenAI(
             api_key="beepboop", base_url=f"http://localhost:{config.port}/v1"
@@ -276,9 +279,7 @@ def test_batch_chat_completions(client: OpenAI):
     assert custom_id_to_parsed["request-2"].choices[0].message.content == "howdy"
 
 
-def test_batch_completions_endpoint(client: OpenAI):
-    import requests
-    
+def test_synchronous_batch_completions(client: OpenAI):
     # Test synchronous batch completions endpoint
     batch_request = {
         "requests": [
@@ -302,30 +303,24 @@ def test_batch_completions_endpoint(client: OpenAI):
             },
         ]
     }
-    
-    # Make request to our custom endpoint
-    url = str(client.base_url).split("/v1")[0] + "/batch/chat/completions"  # update the path
 
-    response = requests.post(
-        url,
-        json=batch_request,
-        headers={"Authorization": f"Bearer {client.api_key}"}
-    )
-    
+    # Make request to our custom endpoint
+    url = (
+        str(client.base_url).split("/v1")[0] + "/custom/synchronous-batch-completions"
+    )  # update the path
+
+    response = requests.post(url, json=batch_request)
+
     assert response.status_code == 200
-    result = response.json()
-    
+
+    result = pickle.loads(response.content)
+
     # Verify response structure
-    assert "completions" in result
-    assert len(result["completions"]) == 3
-    
+    assert len(result) == 3
+
     # Verify each completion
-    completions = result["completions"]
-    assert completions[0]["choices"][0]["message"]["content"] == "hello"
-    assert completions[1]["choices"][0]["message"]["content"] == "world"
-    assert completions[2]["choices"][0]["message"]["content"] == "test"
-    
-    # Verify results are in correct order
-    expected_words = ["hello", "world", "test"]
-    for i, completion in enumerate(completions):
-        assert completion["choices"][0]["message"]["content"] == expected_words[i]
+    completions = result
+
+    assert completions[0].choices[0].message.content == "hello"
+    assert completions[1].choices[0].message.content == "world"
+    assert completions[2].choices[0].message.content == "test"

@@ -100,7 +100,6 @@ class ChatCompletionRequest(BaseModel):
     user: Optional[str] = None
     metadata: Optional[dict] = None
 
-
     # extra fields ---
 
     # needed for sglang benchmarking script
@@ -139,6 +138,11 @@ class BatchCreationRequest(BaseModel):
 
 
 class BatchCompletionsRequest(BaseModel):
+    requests: list[ChatCompletionRequest] = Field(
+        description="List of chat completion requests to process"
+    )
+
+class SynchronousBatchCompletionsRequest(BaseModel):
     """Request model for synchronous batch completions"""
 
     requests: list[ChatCompletionRequest] = Field(
@@ -151,8 +155,6 @@ class BatchCartridgeChatCompletionsRequest(BaseModel):
     requests: list[CartridgeChatCompletionRequest] = Field(
         description="List of chat completion requests to process"
     )
-
-
 
 
 @dataclass
