@@ -76,7 +76,7 @@ def make_sequences(
     ]
 
     for d in decoding_seqs:
-        kvs, num_cached = allocator.allocate_with_prefix_match(d.id, d.input_ids)
+        _, kvs, num_cached = allocator.allocate_with_prefix_match(d.id, d.input_ids)
         completion_scheduled = random.randint(1, d.completion_total - 1)
         d.prompt_scheduled = len(d.input_ids)
         d.completion_scheduled = completion_scheduled
@@ -87,7 +87,7 @@ def make_sequences(
         assert 0 <= page_size * len(kvs) - allocate_up_to < page_size
 
     for p in prefilling_seqs:
-        kvs, num_cached = allocator.allocate_with_prefix_match(p.id, p.input_ids)
+        _, kvs, num_cached = allocator.allocate_with_prefix_match(p.id, p.input_ids)
         p.prompt_scheduled = num_cached
         p.num_cached_prompt_tokens = num_cached
         p.kv_indices = kvs
@@ -127,6 +127,7 @@ def test_calc_block_usage_over_time(seed):
         assert seq.kv_indices is not None
         return allocator.free_and_update(
             seq.id,
+            [],
             seq.kv_indices,
             seq.input_ids
             + [

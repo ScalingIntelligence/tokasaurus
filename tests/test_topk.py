@@ -13,7 +13,7 @@ from tokasaurus.common_types import ServerConfig
 from tokasaurus.entry import server_manager
 from tokasaurus.utils import find_free_port
 
-MODEL = os.environ.get("MODEL", "meta-llama/Llama-3.2-1B-Instruct")
+MODEL = os.environ.get("MODEL", "Qwen/Qwen3-0.6B")
 OVERRIDES = os.environ.get("OVERRIDES", None)
 
 

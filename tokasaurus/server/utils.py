@@ -741,36 +741,31 @@ def process_chat_completions_output(
     request: TokasaurusRequest,
     output: RequestOutput,
 ):
-    # Check for errors first
-    if output.error_message is not None:
-        raise HTTPException(
-            status_code=400,
-            detail=output.error_message,
-        )
-    
     completions = decode_completion(state, request, output)
 
     choices = []
     for i in range(request.n):
+        seq_out = output.sequence_outputs[i]
         new_message = ChatCompletionMessage(
             role="assistant",
             content=completions[i],
         )
 
-        if crequest.logprobs is None:
-            logprobs = None
-        else:
+        if crequest.logprobs and not crequest.logprobs_in_fingerprint:
             logprobs = make_chat_logprobs(
-                completion_ids=output.completion_ids[i],
-                logprobs=output.logprobs[i],
+                crequest=crequest,
+                seq_out=seq_out,
                 inverse_vocab=state.inverse_vocab,
             )
+        else:
+            # if None or False
+            logprobs = None
 
         choice = Choice(
             index=i,
             message=new_message,
             logprobs=logprobs,
-            finish_reason=output.finish_reason[i],
+            finish_reason=seq_out.finish_reason,
         )
         choices.append(choice)
 
@@ -781,7 +776,11 @@ def process_chat_completions_output(
         choices=choices,
         created=nowstamp(),
         object="chat.completion",
-        system_fingerprint=make_completions_fingerprint(output),
+        system_fingerprint=make_completions_fingerprint(
+            output,
+            add_logprobs=crequest.logprobs_in_fingerprint,
+            topk=crequest.top_logprobs,
+        ),
     )
 
 
