@@ -7,11 +7,15 @@ from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, Form, HTTPException, Path, Request, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from openai.pagination import SyncPage
 from openai.types.batch import Batch
 from openai.types.file_deleted import FileDeleted
 from openai.types.file_object import FileObject
 from openai.types.model import Model
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
+from openai.types.chat.chat_completion_chunk import Choice as StreamChoice
+from openai.types.chat.chat_completion_chunk import ChoiceDelta
 
 from tokasaurus.common_types import (
     Engine,
@@ -63,6 +67,75 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+def create_streaming_response(completion_response, request):
+    """
+    Convert a completed ChatCompletion to a streaming response format.
+    This waits for the entire completion and then streams it as SSE events.
+    """
+    import json
+
+    
+    async def generate_stream():
+        # First chunk with role
+        first_chunk = ChatCompletionChunk(
+            id=completion_response.id,
+            choices=[
+                StreamChoice(
+                    index=0,
+                    delta=ChoiceDelta(role="assistant", content=""),
+                    finish_reason=None
+                )
+            ],
+            created=completion_response.created,
+            model=completion_response.model,
+            object="chat.completion.chunk"
+        )
+        yield f"data: {json.dumps(first_chunk.model_dump())}\n\n"
+        
+        # Content chunk with the full message
+        for choice in completion_response.choices:
+            content_chunk = ChatCompletionChunk(
+                id=completion_response.id,
+                choices=[
+                    StreamChoice(
+                        index=choice.index,
+                        delta=ChoiceDelta(content=choice.message.content),
+                        finish_reason=None
+                    )
+                ],
+                created=completion_response.created,
+                model=completion_response.model,
+                object="chat.completion.chunk"
+            )
+            yield f"data: {json.dumps(content_chunk.model_dump())}\n\n"
+        
+        # Final chunk with finish reason
+        for choice in completion_response.choices:
+            final_chunk = ChatCompletionChunk(
+                id=completion_response.id,
+                choices=[
+                    StreamChoice(
+                        index=choice.index,
+                        delta=ChoiceDelta(),
+                        finish_reason=choice.finish_reason
+                    )
+                ],
+                created=completion_response.created,
+                model=completion_response.model,
+                object="chat.completion.chunk"
+            )
+            yield f"data: {json.dumps(final_chunk.model_dump())}\n\n"
+        
+        # End of stream
+        yield "data: [DONE]\n\n"
+    
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/plain",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    )
+
+
 @app.get("/ping")
 async def ping():
     return {"message": "pong"}
@@ -79,9 +152,17 @@ async def oai_completions(request: CompletionsRequest, raw_request: Request):
 @app.post("/v1/chat/completions")
 @with_cancellation
 async def oai_chat_completions(request: ChatCompletionRequest, raw_request: Request):
+    for message in request.messages:
+        print(f"[{message['role']}] {message['content']}")
+
     state: ServerState = app.state.state_bundle
     req, out = await generate_output(state, request)
-    return process_chat_completions_output(state, request, req, out)
+    output = process_chat_completions_output(state, request, req, out)
+
+    if request.stream:
+        return create_streaming_response(output, request)
+    else:
+        return output
 
 
 

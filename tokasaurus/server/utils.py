@@ -531,11 +531,11 @@ def validate_completions_request(config: ServerConfig, request: CompletionsReque
 
 
 def validate_args(config: ServerConfig, request: ChatCompletionRequest | CompletionsRequest | CartridgeCompletionsRequest | CartridgeChatCompletionRequest):
-    if request.stream:
-        raise HTTPException(
-            status_code=400,
-            detail="Streaming is not supported",
-        )
+    # if request.stream:
+    #     raise HTTPException(
+    #         status_code=400,
+    #         detail="Streaming is not supported",
+    #     )
 
     if request.top_p not in [None, 1.0]:
         raise HTTPException(
@@ -569,11 +569,14 @@ def validate_args(config: ServerConfig, request: ChatCompletionRequest | Complet
             exactly_one_is_set = (raw_max_tokens is None) ^ (
                 raw_max_completion_tokens is None
             )
+            # if not exactly_one_is_set:
+            #     raise HTTPException(
+            #         status_code=400,
+            #         detail="exactly one of max_tokens or max_completion_tokens must be set",
+            #     )
             if not exactly_one_is_set:
-                raise HTTPException(
-                    status_code=400,
-                    detail="exactly one of max_tokens or max_completion_tokens must be set",
-                )
+                request.max_completion_tokens = 1024
+                raw_max_tokens = 1024   
 
             max_tokens = raw_max_tokens or raw_max_completion_tokens
         case CompletionsRequest() | CartridgeCompletionsRequest():
@@ -600,7 +603,12 @@ def validate_args(config: ServerConfig, request: ChatCompletionRequest | Complet
 def process_request(
     state: ServerState, request: ChatCompletionRequest | CompletionsRequest | CartridgeCompletionsRequest | CartridgeChatCompletionRequest
 ):
-    validate_args(state.config, request)
+    try:
+        validate_args(state.config, request)
+    except HTTPException as e:
+        print(f"HTTPException: {e}")
+        print(f"request: {e.detail}")
+        raise e
 
     if (n := request.n) is None:
         n = 1
@@ -640,7 +648,6 @@ def process_request(
             prompt = state.tokenizer.apply_chat_template(
                 messages, **apply_chat_template_kwargs
             )
-            print(prompt)
             input_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
             top_logprobs = request.top_logprobs
             max_tokens = request.max_completion_tokens or request.max_tokens
