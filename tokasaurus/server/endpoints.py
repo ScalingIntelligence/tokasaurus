@@ -29,7 +29,7 @@ from tokasaurus.server.types import (
     SubmittedBatchItem,
     CartridgeCompletionsRequest,
     CartridgeChatCompletionRequest,
-    BatchCartridgeChatCompletionsRequest,
+    SynchronousBatchCartridgeChatCompletionsRequest,
     SynchronousBatchCompletionsRequest,
     nowstamp,
 )
@@ -270,7 +270,7 @@ async def synchronous_batch_completions(
 
 
 
-@app.post("/v1/cartridge/completions")
+@app.post("/custom/cartridge/completions")
 @with_cancellation
 async def cartridge_completions(request: CartridgeCompletionsRequest, raw_request: Request):
     state: ServerState = app.state.state_bundle
@@ -278,7 +278,7 @@ async def cartridge_completions(request: CartridgeCompletionsRequest, raw_reques
     return process_completions_output(state, request, req, out)
 
 
-@app.post("/v1/cartridge/chat/completions")
+@app.post("/custom/cartridge/chat/completions")
 @with_cancellation
 async def cartridge_chat_completions(request: CartridgeChatCompletionRequest, raw_request: Request):
     state: ServerState = app.state.state_bundle
@@ -286,9 +286,9 @@ async def cartridge_chat_completions(request: CartridgeChatCompletionRequest, ra
     return process_cartridge_chat_completions_output(state, request, req, out)
 
 
-@app.post("/batch/cartridge/chat/completions")
+@app.post("/custom/cartridge/synchronous-batch-completions")
 @with_cancellation
-async def cartridge_synchronous_chat_completions(request: BatchCartridgeChatCompletionsRequest, raw_request: Request):
+async def cartridge_synchronous_chat_completions(request: SynchronousBatchCartridgeChatCompletionsRequest, raw_request: Request):
     state: ServerState = app.state.state_bundle
     t0 = time.time()
     async def generate_and_process(req: CartridgeChatCompletionRequest):

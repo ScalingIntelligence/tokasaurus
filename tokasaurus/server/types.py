@@ -149,7 +149,7 @@ class SynchronousBatchCompletionsRequest(BaseModel):
         description="List of chat completion requests to process"
     )
 
-class BatchCartridgeChatCompletionsRequest(BaseModel):
+class SynchronousBatchCartridgeChatCompletionsRequest(BaseModel):
     """Request model for synchronous batch completions"""
 
     requests: list[CartridgeChatCompletionRequest] = Field(
