@@ -23,7 +23,7 @@ from tokasaurus.manager.input_building import (
     seqs_to_input,
     slice_decision,
 )
-from tokasaurus.manager.monitoring import step_stats, track_time_decorator
+from tokasaurus.manager.monitoring import step_stats, track_time_decorator, StatsTracker, WandbLogger, log_to_wandb
 from tokasaurus.manager.scheduler import (
     BlockUsageOverTime,
     SchedulingQueue,
@@ -1353,6 +1353,7 @@ def start_manager(
     q_download_complete: mp.Queue,
     process_name: str,
     barrier: TimedBarrier,
+    dp_rank: int = 0,
 ):
     setup_logging(config)
 
@@ -1374,6 +1375,13 @@ def start_manager(
 
     state.logger.info("Manager started")
 
+    # Initialize WandB logger if enabled
+    if config.wandb_enabled:
+        state.wandb_logger = WandbLogger(config, dp_rank)
+        state.logger.info(f"WandB logging initialized for DP rank {dp_rank}")
+    else:
+        state.wandb_logger = None
+
     if config.track_early_stopping:
         state.early_stopping_tracker = EarlyStoppingTracker(
             buffer_size=config.early_stopping_buffer_size,
@@ -1384,4 +1392,10 @@ def start_manager(
 
     barrier.wait()
 
-    manager_loop(config, state)
+    try:
+        manager_loop(config, state)
+    finally:
+        # Clean up WandB logger on shutdown
+        if hasattr(state, 'wandb_logger') and state.wandb_logger is not None:
+            state.wandb_logger.close()
+            state.logger.info("WandB logging closed")

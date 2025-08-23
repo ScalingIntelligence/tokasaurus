@@ -59,6 +59,7 @@ def make_engine(config: ServerConfig, dp_rank: int, master_port: int):
             "q_manager_to_server": q_manager_to_server,
             "q_download_requests": q_download_requests,
             "q_download_complete": q_download_complete,
+            "dp_rank": dp_rank,
         },
     )
 

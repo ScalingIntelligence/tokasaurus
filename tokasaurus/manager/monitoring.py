@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import statsd
 from tabulate import tabulate
+import wandb
 
 from tokasaurus.common_types import ServerConfig
 
@@ -93,15 +94,83 @@ def _hostname() -> str:
     """Get the hostname of this machine, used to identify it in statsd logs."""
     return socket.gethostname().replace(".", "_")
 
+class WandbLogger:
+    def __init__(self, config: ServerConfig, dp_rank: int = 0):
+        self.config = config
+        self.dp_rank = dp_rank
+        
+        if not config.wandb_enabled:
+            self.run = None
+            return
+            
+        # Initialize WandB with configuration, including DP rank in tags
+        init_kwargs = {
+            "entity": config.wandb_entity,
+            "project": config.wandb_project,
+            "config": config.to_dict(),
+            "tags": []
+        }
+        
+        
+        # Add DP rank to run name for differentiation
+        # Build a comprehensive run name
+        name_parts = []
+        
+        # Add model name (extract just the model name from path)
+        model_name = config.model.split('/')[-1]
+        name_parts.append(model_name)
+        
+        # Add hostname
+        hostname = _hostname()
+        name_parts.append(hostname)
+        
+        # Add DP rank if using multiple data parallel workers
+        if config.dp_size > 1:
+            name_parts.append(f"dp{dp_rank}")
+        
+        # Add user-specified run name if provided
+        if config.wandb_run_name:
+            name_parts.append(config.wandb_run_name)
+        
+        # Add GPU type
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0).replace(' ', '_')
+                name_parts.append(gpu_name)
+        except:
+            pass  # Skip GPU type if we can't determine it
+        
+        init_kwargs["name"] = "_".join(name_parts).lower()
+            
+        self.run = wandb.init(**init_kwargs)
+    
+    def log(self, metrics: dict[str, int | float]):
+        if self.run is not None:
+            self.run.log(metrics)
+    
+    def close(self):
+        if self.run is not None:
+            self.run.finish()
+
 
 def log_to_statsd(config: ServerConfig, metrics: dict[str, int | float]):
     """Log a dictionary of metrics to statsd."""
+    if config.statsd_server_url is None:
+        return
+        
     prefix = f"tokasaurus.{_hostname()}.port_{config.port}"
     client = _statsd_client(config.statsd_server_url)
 
     for k, v in metrics.items():
         prefix_with_k = f"{prefix}.{k}"
         client.gauge(prefix_with_k, v)
+
+
+def log_to_wandb(wandb_logger: WandbLogger | None, metrics: dict[str, int | float]):
+    """Log a dictionary of metrics to wandb."""
+    if wandb_logger is not None:
+        wandb_logger.log(metrics)
 
 
 @dataclass
@@ -362,6 +431,7 @@ def step_stats(
         )
 
         log_to_statsd(config, stats)
+        log_to_wandb(getattr(state, 'wandb_logger', None), stats)
 
         state.logger.info(" | ".join(logger_parts))
 

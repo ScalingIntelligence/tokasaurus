@@ -1,7 +1,10 @@
 import math
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from tokasaurus.manager.monitoring import WandbLogger
 
 import numpy as np
 import torch.multiprocessing as mp
@@ -383,6 +386,9 @@ class ManagerState:
     cartridge_id_to_config: dict[str, CartridgeConfig] = field(default_factory=dict)
     cartridge_loading_state: dict[str, bool] = field(default_factory=dict)
     cartridge_info_storage: dict[str, dict] = field(default_factory=dict)
+    
+    # Monitoring
+    wandb_logger: "WandbLogger | None" = None
 
     def __post_init__(self):
         self.tokenizer = AutoTokenizer.from_pretrained(self.config.tokenizer)

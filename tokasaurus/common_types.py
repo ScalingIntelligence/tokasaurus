@@ -73,6 +73,12 @@ class ServerConfig(pydra.Config):
 
     stats_report_seconds: float = 5.0
     statsd_server_url: None | str = None
+    
+    # WandB configuration
+    wandb_enabled: bool = False
+    wandb_entity: str = "hazy-research"
+    wandb_project: str = "tokasaurus"
+    wandb_run_name: str | None = None
 
     page_size: int = 16
     kv_cache_num_tokens: int = 1024 * 128
