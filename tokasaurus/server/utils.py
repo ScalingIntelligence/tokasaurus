@@ -625,6 +625,7 @@ def process_request(
         case ChatCompletionRequest():
             # Convert messages to plain dictionaries to avoid ValidatorIterator issues
             messages = []
+            cartridges_in_system_prompt = []
             for msg in request.messages:
                 converted_msg = {"role": msg["role"]}
                 
@@ -659,7 +660,41 @@ def process_request(
                             detail=f"Invalid content {converted_msg['content']} contains non-text content. Tokasaurus only supports text content.",
                         )
                     converted_msg["content"] = converted_msg["content"][0]["text"]
+                
+                if converted_msg["role"] == "system":
+                    # search for the following pattern:
+                    # --- begin pattern ---
+                    # <cartridge> 
+                    # {"id": "...", "source": "...", "force_redownload": "..."}
+                    # </cartridge> in the content
+                    # --- end pattern ---
+                    # if found, parse it using the Cartridge BaseModel and add it to the cartridges list
+                    import re
+                    import json
+                    from tokasaurus.server.types import Cartridge
+                    
+                    content = converted_msg["content"]
+                    if isinstance(content, str):
+                        # Find all cartridge blocks in the system message
+                        cartridge_pattern = r'<cartridge>\s*(\{.*?\})\s*</cartridge>'
+                        matches = re.findall(cartridge_pattern, content, re.DOTALL)
+                        
+                        for match in matches:
+                            try:
+                                # Parse the JSON configuration
+                                print(f"match: {match}")
+                                cartridge_config = json.loads(match.strip())
+                                # Validate using the Cartridge model
+                                cartridge = Cartridge.model_validate(cartridge_config)
+                                cartridges_in_system_prompt.append(cartridge)
+                            except (json.JSONDecodeError, ValueError) as e:
+                                # Skip invalid cartridge configs but don't fail the request
+                                print(f"Warning: Invalid cartridge config in system prompt: {e}")
+                                continue
+
+
                 messages.append(converted_msg)
+            
 
             ends_with_user = messages[-1]["role"] == "user"
             apply_chat_template_kwargs = {
@@ -670,6 +705,13 @@ def process_request(
 
             if (overrides := request.apply_chat_template_overrides) is not None:
                 apply_chat_template_kwargs.update(overrides)
+            
+            if len(cartridges_in_system_prompt) > 0:                # Create a new CartridgeChatCompletionRequest with the same data
+                request_dict = request.model_dump()
+                request_dict['cartridges'] = cartridges_in_system_prompt
+                cartridge_request = CartridgeChatCompletionRequest(**request_dict)
+                # Replace the original request with the cartridge request
+                request = cartridge_request
             
             if isinstance(request, CartridgeChatCompletionRequest):
                 cartridges = request.cartridges
