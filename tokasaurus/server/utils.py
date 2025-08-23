@@ -531,11 +531,6 @@ def validate_completions_request(config: ServerConfig, request: CompletionsReque
 
 
 def validate_args(config: ServerConfig, request: ChatCompletionRequest | CompletionsRequest | CartridgeCompletionsRequest | CartridgeChatCompletionRequest):
-    # if request.stream:
-    #     raise HTTPException(
-    #         status_code=400,
-    #         detail="Streaming is not supported",
-    #     )
 
     if request.top_p not in [None, 1.0]:
         raise HTTPException(
@@ -569,14 +564,16 @@ def validate_args(config: ServerConfig, request: ChatCompletionRequest | Complet
             exactly_one_is_set = (raw_max_tokens is None) ^ (
                 raw_max_completion_tokens is None
             )
-            # if not exactly_one_is_set:
-            #     raise HTTPException(
-            #         status_code=400,
-            #         detail="exactly one of max_tokens or max_completion_tokens must be set",
-            #     )
-            if not exactly_one_is_set:
-                request.max_completion_tokens = 1024
-                raw_max_tokens = 1024   
+            if not exactly_one_is_set and config.max_completion_tokens is not None:
+                # TODO(SE): This is a hack to allow toka to work with raycast, which 
+                # doesn't allow us to add a max_tokens field to the request. 
+                request.max_completion_tokens = config.max_completion_tokens
+                raw_max_tokens = config.max_completion_tokens   
+            elif not exactly_one_is_set:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Exactly one of max_tokens or max_completion_tokens must be set. If you want to use a default max_completion_tokens, set it in the server config.",
+                )
 
             max_tokens = raw_max_tokens or raw_max_completion_tokens
         case CompletionsRequest() | CartridgeCompletionsRequest():
