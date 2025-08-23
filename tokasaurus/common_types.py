@@ -124,6 +124,9 @@ class ServerConfig(pydra.Config):
     allocator_sanity_checks: bool = False
     bump_city_population_me: bool = False
 
+    # TODO(SE): This needs to be fixed, it's an uber hack. 
+    max_completion_tokens: int | None = None
+
     # Cartridge configuration
     cartridge_dir: str = "./cartridges"
 

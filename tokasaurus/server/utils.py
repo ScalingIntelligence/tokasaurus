@@ -531,11 +531,6 @@ def validate_completions_request(config: ServerConfig, request: CompletionsReque
 
 
 def validate_args(config: ServerConfig, request: ChatCompletionRequest | CompletionsRequest | CartridgeCompletionsRequest | CartridgeChatCompletionRequest):
-    if request.stream:
-        raise HTTPException(
-            status_code=400,
-            detail="Streaming is not supported",
-        )
 
     if request.top_p not in [None, 1.0]:
         raise HTTPException(
@@ -569,10 +564,15 @@ def validate_args(config: ServerConfig, request: ChatCompletionRequest | Complet
             exactly_one_is_set = (raw_max_tokens is None) ^ (
                 raw_max_completion_tokens is None
             )
-            if not exactly_one_is_set:
+            if not exactly_one_is_set and config.max_completion_tokens is not None:
+                # TODO(SE): This is a hack to allow toka to work with raycast, which 
+                # doesn't allow us to add a max_tokens field to the request. 
+                request.max_completion_tokens = config.max_completion_tokens
+                raw_max_tokens = config.max_completion_tokens   
+            elif not exactly_one_is_set:
                 raise HTTPException(
                     status_code=400,
-                    detail="exactly one of max_tokens or max_completion_tokens must be set",
+                    detail="Exactly one of max_tokens or max_completion_tokens must be set. If you want to use a default max_completion_tokens, set it in the server config.",
                 )
 
             max_tokens = raw_max_tokens or raw_max_completion_tokens
@@ -600,7 +600,12 @@ def validate_args(config: ServerConfig, request: ChatCompletionRequest | Complet
 def process_request(
     state: ServerState, request: ChatCompletionRequest | CompletionsRequest | CartridgeCompletionsRequest | CartridgeChatCompletionRequest
 ):
-    validate_args(state.config, request)
+    try:
+        validate_args(state.config, request)
+    except HTTPException as e:
+        print(f"HTTPException: {e}")
+        print(f"request: {e.detail}")
+        raise e
 
     if (n := request.n) is None:
         n = 1
@@ -618,7 +623,44 @@ def process_request(
 
     match request:
         case ChatCompletionRequest():
-            messages = request.messages
+            # Convert messages to plain dictionaries to avoid ValidatorIterator issues
+            messages = []
+            for msg in request.messages:
+                converted_msg = {"role": msg["role"]}
+                
+                # Handle content field which might be a ValidatorIterator
+                content = msg.get("content")
+                if hasattr(content, '__iter__') and not isinstance(content, str) and content is not None:
+                    # If content is an iterable (like ValidatorIterator), convert to list
+                    try:
+                        converted_msg["content"] = list(content)
+                    except Exception:
+                        # Fallback to string representation if conversion fails
+                        converted_msg["content"] = str(content)
+                else:
+                    converted_msg["content"] = content
+                    
+                # Copy other fields that might be present
+                for key in ["name", "tool_calls", "function_call", "refusal"]:
+                    if key in msg:
+                        converted_msg[key] = msg[key]
+                if not isinstance(converted_msg["content"], str):
+                    assert isinstance(converted_msg["content"], list)
+                    if len(converted_msg["content"]) != 1:
+                        print(converted_msg["content"])
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Invalid content {converted_msg['content']} contains multiple parts. Tokasaurus only supports one part per message.",
+                        )
+                    if converted_msg["content"][0]["type"] != "text":
+                        print(converted_msg["content"])
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Invalid content {converted_msg['content']} contains non-text content. Tokasaurus only supports text content.",
+                        )
+                    converted_msg["content"] = converted_msg["content"][0]["text"]
+                messages.append(converted_msg)
+
             ends_with_user = messages[-1]["role"] == "user"
             apply_chat_template_kwargs = {
                 "tokenize": False,
@@ -640,7 +682,6 @@ def process_request(
             prompt = state.tokenizer.apply_chat_template(
                 messages, **apply_chat_template_kwargs
             )
-            print(prompt)
             input_ids = state.tokenizer(prompt, add_special_tokens=False)["input_ids"]
             top_logprobs = request.top_logprobs
             max_tokens = request.max_completion_tokens or request.max_tokens
