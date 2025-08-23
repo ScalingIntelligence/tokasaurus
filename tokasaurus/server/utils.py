@@ -626,7 +626,44 @@ def process_request(
 
     match request:
         case ChatCompletionRequest():
-            messages = request.messages
+            # Convert messages to plain dictionaries to avoid ValidatorIterator issues
+            messages = []
+            for msg in request.messages:
+                converted_msg = {"role": msg["role"]}
+                
+                # Handle content field which might be a ValidatorIterator
+                content = msg.get("content")
+                if hasattr(content, '__iter__') and not isinstance(content, str) and content is not None:
+                    # If content is an iterable (like ValidatorIterator), convert to list
+                    try:
+                        converted_msg["content"] = list(content)
+                    except Exception:
+                        # Fallback to string representation if conversion fails
+                        converted_msg["content"] = str(content)
+                else:
+                    converted_msg["content"] = content
+                    
+                # Copy other fields that might be present
+                for key in ["name", "tool_calls", "function_call", "refusal"]:
+                    if key in msg:
+                        converted_msg[key] = msg[key]
+                if not isinstance(converted_msg["content"], str):
+                    assert isinstance(converted_msg["content"], list)
+                    if len(converted_msg["content"]) != 1:
+                        print(converted_msg["content"])
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Invalid content {converted_msg['content']} contains multiple parts. Tokasaurus only supports one part per message.",
+                        )
+                    if converted_msg["content"][0]["type"] != "text":
+                        print(converted_msg["content"])
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Invalid content {converted_msg['content']} contains non-text content. Tokasaurus only supports text content.",
+                        )
+                    converted_msg["content"] = converted_msg["content"][0]["text"]
+                messages.append(converted_msg)
+
             ends_with_user = messages[-1]["role"] == "user"
             apply_chat_template_kwargs = {
                 "tokenize": False,

@@ -152,9 +152,6 @@ async def oai_completions(request: CompletionsRequest, raw_request: Request):
 @app.post("/v1/chat/completions")
 @with_cancellation
 async def oai_chat_completions(request: ChatCompletionRequest, raw_request: Request):
-    for message in request.messages:
-        print(f"[{message['role']}] {message['content']}")
-
     state: ServerState = app.state.state_bundle
     req, out = await generate_output(state, request)
     output = process_chat_completions_output(state, request, req, out)
@@ -419,4 +416,16 @@ def start_server(
         host="0.0.0.0",
         port=config.port,
         log_level=config.uvicorn_log_level,
+    )
+
+
+if __name__ == "__main__":
+    # Useful for debugging
+    app.state.state_bundle = None
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=10210,
+        log_level="info",
     )
