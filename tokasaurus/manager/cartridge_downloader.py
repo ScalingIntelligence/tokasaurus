@@ -320,6 +320,7 @@ def validate_cartridge_exists(cartridge_id: str, source: str, logger=None):
             api = wandb.Api()
             try:
                 # Use original cartridge_id for API call
+                print(f"Checking if cartridge {cartridge_id} exists in wandb")
                 run = api.run(f"hazy-research/{WANDB_PROJECT_ID}/{cartridge_id}")
                 # Just check if we can access the run - don't download anything
                 logger.debug(f"Cartridge {cartridge_id} exists in wandb")

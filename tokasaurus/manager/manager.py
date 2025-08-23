@@ -95,8 +95,6 @@ def check_and_request_downloads(state: ManagerState, cartridges: list[dict] | No
             state.load_cartridge_config(cartridge_id)
             continue
         else:
-            # First, validate that the cartridge exists remotely before starting download
-            validate_cartridge_exists(cartridge_id, source, state.logger)
             
             # Check if wandb cartridge exists locally (use sanitized ID for directory path)
             sanitized_id = sanitize_cartridge_id(cartridge_id)
@@ -109,6 +107,8 @@ def check_and_request_downloads(state: ManagerState, cartridges: list[dict] | No
             
             if should_download:
                 # Only request download if not already downloading
+                # First, validate that the cartridge exists remotely before starting download
+                validate_cartridge_exists(cartridge_id, source, state.logger)
                 if cartridge_id not in state.cartridges_downloading:
                     download_req = DownloadRequest(
                         cartridge_id=cartridge_id,
@@ -294,7 +294,7 @@ def handle_new_server_commands(state: ManagerState):
                         
                             # Validate local cartridge configs and request downloads if needed
                             check_and_request_downloads(state, cartridge_info_list)
-                        
+
                         seq = Sequence(
                             id=sid,
                             input_ids=req.input_ids,

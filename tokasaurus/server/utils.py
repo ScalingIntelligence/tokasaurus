@@ -1030,6 +1030,7 @@ async def generate_output(
     req = process_request(state, request)
     submitted = submit_request(state, req)
 
+
     try:
         await submitted.event.wait()
     except asyncio.CancelledError:
