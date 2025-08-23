@@ -682,7 +682,6 @@ def process_request(
                         for match in matches:
                             try:
                                 # Parse the JSON configuration
-                                print(f"match: {match}")
                                 cartridge_config = json.loads(match.strip())
                                 # Validate using the Cartridge model
                                 cartridge = Cartridge.model_validate(cartridge_config)
@@ -691,6 +690,13 @@ def process_request(
                                 # Skip invalid cartridge configs but don't fail the request
                                 print(f"Warning: Invalid cartridge config in system prompt: {e}")
                                 continue
+                        
+                        # Remove all cartridge blocks from the content
+                        if matches:
+                            cleaned_content = re.sub(cartridge_pattern, '', content, flags=re.DOTALL)
+                            # Clean up any extra whitespace left behind
+                            cleaned_content = re.sub(r'\n\s*\n\s*\n', '\n\n', cleaned_content.strip())
+                            converted_msg["content"] = cleaned_content
 
 
                 messages.append(converted_msg)
