@@ -8,6 +8,7 @@ from uuid import uuid4
 import uvicorn
 from fastapi import FastAPI, Form, HTTPException, Path, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
+from fastapi.exception_handlers import http_exception_handler
 from openai.pagination import SyncPage
 from openai.types.batch import Batch
 from openai.types.file_deleted import FileDeleted
@@ -135,6 +136,12 @@ def create_streaming_response(completion_response, request):
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
     )
 
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler_w_logging(request: Request, exc: HTTPException):
+    state: ServerState = app.state.state_bundle
+    state.logger.error(f"HTTPException: {exc.status_code} {exc.detail}")
+    return await http_exception_handler(request, exc)
 
 @app.get("/ping")
 async def ping():
