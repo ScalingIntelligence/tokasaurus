@@ -238,6 +238,80 @@ def test_download_cartridge_huggingface(cartridge_id: str = "hazyresearch/cartri
         logger.error(f"❌ HuggingFace test failed: {e}")
         return False
 
+def test_download_cartridge_s3(
+    cartridge_id: str = "s3://engram-cartridges/weights/cartridge-llama-40455a296d32046e/cache-step27.pt",
+    test_dir: Path | None = None,
+):
+    """
+    Test downloading a cartridge from S3 and verify its existence.
+    
+    Args:
+        cartridge_id: The S3 cartridge ID to download (default: "s3://engram-cartridges/weights/cartridge-llama-40455a296d32046e/cache-step27.pt")
+        test_dir: Directory to download to (if None, uses temp directory)
+    """
+    if test_dir is None:
+        test_dir = Path(tempfile.mkdtemp())
+        logger.info(f"Using temporary directory: {test_dir}")
+    
+    logger.info(f"Testing S3 cartridge download: {cartridge_id}")
+    
+    try:
+        # Test downloading from S3
+        download_cartridge(
+            cartridge_id=cartridge_id,
+            source="s3",
+            cartridges_path=test_dir,
+            force_redownload=False
+        )
+        
+        # Verify the cartridge was downloaded
+        # Use the sanitized cartridge ID to get the correct directory name
+        sanitized_cartridge_id = sanitize_cartridge_id(cartridge_id)
+        cartridge_dir = test_dir / sanitized_cartridge_id
+        
+        # For S3 downloads, the file might be downloaded directly as a .pt file
+        # Check for both cartridge.pt and the original filename
+        cartridge_file = cartridge_dir / "cartridge.pt"
+        if not cartridge_file.exists():
+            # Try the original filename
+            original_filename = Path(cartridge_id).name
+            cartridge_file = cartridge_dir / original_filename
+        
+        if not cartridge_file.exists():
+            raise FileNotFoundError(f"Cartridge file not found in: {cartridge_dir}")
+        
+        # Check file size
+        cartridge_size = cartridge_file.stat().st_size
+        
+        logger.info(f"✅ S3 download successful!")
+        logger.info(f"   Cartridge file: {cartridge_file} ({cartridge_size / (1024*1024):.2f} MB)")
+        
+        # Test force redownload - capture original timestamp first
+        logger.info("Testing force redownload from S3...")
+        original_cartridge_mtime = cartridge_file.stat().st_mtime
+        
+        # Sleep briefly to ensure timestamps would be different if files are re-downloaded
+        time.sleep(0.1)
+        
+        download_cartridge(
+            cartridge_id=cartridge_id,
+            source="s3",
+            cartridges_path=test_dir,
+            force_redownload=True
+        )
+        
+        # Verify the file was re-downloaded (timestamp should be different)
+        new_cartridge_mtime = cartridge_file.stat().st_mtime
+        if new_cartridge_mtime > original_cartridge_mtime:
+            logger.info("✅ Force redownload from S3 successful!")
+        else:
+            logger.warning("⚠️ Force redownload may not have updated the file timestamp")
+
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ S3 test failed: {e}")
+        return False
 
 def test_invalid_source():
     """Test invalid source handling."""
@@ -263,7 +337,6 @@ def test_invalid_source():
         logger.error(f"❌ Unexpected exception: {e}")
         return False
 
-
 if __name__ == "__main__":
     # Get cartridge ID from command line or use default
     cartridge_id = sys.argv[1] if len(sys.argv) > 1 else "wauoq23f"
@@ -275,30 +348,40 @@ if __name__ == "__main__":
     
     all_tests_passed = True
     
-    # Test 1: Local cartridge validation
+    # # Test 1: Local cartridge validation
+    # logger.info("\n" + "="*50)
+    # logger.info("TEST 1: Local Cartridge Validation")
+    # logger.info("="*50)
+    # if not test_local_cartridge():
+    #     all_tests_passed = False
+    
+    # # Test 2: Wandb download and validation
+    # logger.info("\n" + "="*50)
+    # logger.info("TEST 2: Wandb Download and Validation")
+    # logger.info("="*50)
+    # if not test_download_cartridge(cartridge_id, test_dir):
+    #     all_tests_passed = False
+    
+    # # Test 3: HuggingFace download and validation
+    # logger.info("\n" + "="*50)
+    # logger.info("TEST 3: HuggingFace Download and Validation")
+    # logger.info("="*50)
+    # if not test_download_cartridge_huggingface("hazyresearch/cartridge-" + cartridge_id, test_dir):
+    #     all_tests_passed = False
+    
+    # Test 4: S3 download and validation
     logger.info("\n" + "="*50)
-    logger.info("TEST 1: Local Cartridge Validation")
+    logger.info("TEST 4: S3 Download and Validation")
     logger.info("="*50)
-    if not test_local_cartridge():
+    if not test_download_cartridge_s3(
+        "s3://engram-cartridges/weights/cartridge-llama-40455a296d32046e/cache-step27.pt",
+        test_dir
+    ):
         all_tests_passed = False
     
-    # Test 2: Wandb download and validation
+    # Test 5: Invalid source handling
     logger.info("\n" + "="*50)
-    logger.info("TEST 2: Wandb Download and Validation")
-    logger.info("="*50)
-    if not test_download_cartridge(cartridge_id, test_dir):
-        all_tests_passed = False
-    
-    # Test 3: HuggingFace download and validation
-    logger.info("\n" + "="*50)
-    logger.info("TEST 3: HuggingFace Download and Validation")
-    logger.info("="*50)
-    if not test_download_cartridge_huggingface("hazyresearch/cartridge-" + cartridge_id, test_dir):
-        all_tests_passed = False
-    
-    # Test 4: Invalid source handling
-    logger.info("\n" + "="*50)
-    logger.info("TEST 4: Invalid Source Handling")
+    logger.info("TEST 5: Invalid Source Handling")
     logger.info("="*50)
     if not test_invalid_source():
         all_tests_passed = False

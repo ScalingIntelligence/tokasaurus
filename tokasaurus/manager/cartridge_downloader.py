@@ -129,9 +129,6 @@ def download_cartridge_from_wandb(cartridge_id: str, cartridges_path: Path, forc
         logger.warning(f"Multiple .pt files found in wandb run {cartridge_id}, using most recent file: {pt_files[0].name}")
 
     wandb_file_name = pt_files[0].name
-    if cartridge_id == "2o672jhw":
-        wandb_file_name = "cache-step512.pt"
-
     # Find the config.yaml file
     config_files = [f for f in run.files() if f.name == "config.yaml"]
     if not config_files:
@@ -288,7 +285,6 @@ def download_cartridge_from_s3(cartridge_id: str, cartridges_path: Path, force_r
     sanitized_id = sanitize_cartridge_id(cartridge_id)
     cartridge_dir = cartridges_path / sanitized_id
     cartridge_file = cartridge_dir / "cartridge.pt"
-    config_file = cartridge_dir / "config.yaml"
 
     # Check if cartridge already exists and skip if not force redownload
     if not force_redownload and cartridge_file.exists() and config_file.exists():
@@ -300,32 +296,34 @@ def download_cartridge_from_s3(cartridge_id: str, cartridges_path: Path, force_r
         raise ValueError(f"S3 cartridge_id must start with 's3://': {cartridge_id}")
 
     # Ensure the S3 path ends with a slash for consistency
-    s3_prefix = cartridge_id if cartridge_id.endswith("/") else cartridge_id + "/"
-
-    # Construct S3 paths for cartridge and config files
-    s3_cartridge_path = s3_prefix + "cartridge.pt"
-    s3_config_path = s3_prefix + "config.yaml"
-
+    if cartridge_id.endswith(".pt"):
+        s3_cartridge_path = cartridge_id
+    else:
+        s3_prefix = cartridge_id if cartridge_id.endswith("/") else cartridge_id + "/"
+        # TODO: SE
+        raise ValueError(f"S3 cartridge_id must end with '.pt': {cartridge_id}")
+        
     cartridge_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Downloading cartridge from {s3_cartridge_path}...")
 
     try:
         # Download cartridge.pt
+        logger.error(f"Downloading from {s3_cartridge_path} to {cartridge_file}")
         download_from_s3(s3_cartridge_path, cartridge_file)
         logger.info(f"Successfully downloaded cartridge.pt to {cartridge_file}")
 
-        # Download config.yaml
-        logger.info(f"Downloading config.yaml from {s3_config_path}...")
-        download_from_s3(s3_config_path, config_file)
-        logger.info(f"Successfully downloaded config.yaml to {config_file}")
+        # # Download config.yaml
+        # logger.info(f"Downloading config.yaml from {s3_config_path}...")
+        # download_from_s3(s3_config_path, config_file)
+        # logger.info(f"Successfully downloaded config.yaml to {config_file}")
 
     except Exception as e:
         logger.error(f"Failed to download cartridge from S3: {e}")
         raise FileNotFoundError(f"Could not download cartridge from S3 path {cartridge_id}") from e
 
-    # Clean the config.yaml file to remove Python-specific YAML tags
-    _clean_yaml_config(config_file, logger)
+    # # Clean the config.yaml file to remove Python-specific YAML tags
+    # _clean_yaml_config(config_file, logger)
 
     size = os.path.getsize(cartridge_file)
     logger.info(f"File size: {size / (1024*1024):.2f} MB")

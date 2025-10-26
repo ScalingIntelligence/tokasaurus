@@ -33,6 +33,7 @@ dependencies = [
     "flashinfer-python==0.2.0.post2",
     "tqdm",
     "wandb",
+    "boto3",
 ]
 
 [project.optional-dependencies]

@@ -82,8 +82,8 @@ def main():
     result = send_request(
         messages=[{"role": "user", "content": "Can you tell me about the patients?"}],
         cartridges=[{
-            "id": "hazyresearch/cartridge-wauoq23f",
-            "source": "huggingface",
+            "id": "s3://engram-cartridges/weights/cartridge-llama-40455a296d32046e/cache-step27.pt",
+            "source": "s3",
             "force_redownload": False
         }]
     )
