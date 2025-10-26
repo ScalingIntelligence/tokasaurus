@@ -73,8 +73,7 @@ def can_schedule_sequence(state: ManagerState, seq: Sequence) -> bool:
         # Check if cartridge exists (use sanitized ID for directory path)
         sanitized_id = sanitize_cartridge_id(cartridge_id)
         cartridge_path = Path(state.config.cartridge_dir) / sanitized_id
-        if not ((cartridge_path / "cartridge.pt").exists() and 
-               (cartridge_path / "config.yaml").exists()):
+        if not (cartridge_path / "cartridge.pt").exists():
             return False  # Not available
     
     return True
@@ -99,8 +98,7 @@ def check_and_request_downloads(state: ManagerState, cartridges: list[dict] | No
             # Check if wandb cartridge exists locally (use sanitized ID for directory path)
             sanitized_id = sanitize_cartridge_id(cartridge_id)
             cartridge_path = Path(state.config.cartridge_dir) / sanitized_id
-            files_exist = ((cartridge_path / "cartridge.pt").exists() and 
-                          (cartridge_path / "config.yaml").exists())
+            files_exist = (cartridge_path / "cartridge.pt").exists()
             
             # Download if files don't exist OR if force_redownload is True
             should_download = not files_exist or force_redownload
@@ -163,7 +161,9 @@ def handle_download_completions(state: ManagerState):
             state.cartridges_downloading.discard(cartridge_id)
             
             # Check if any sequences were waiting for this cartridge
+            state.logger.info(f"Cartridge {cartridge_id} in sequences waiting for cartridges: {state.sequences_waiting_for_cartridges}")
             if cartridge_id in state.sequences_waiting_for_cartridges:
+                state.logger.info(f"Cartridge {cartridge_id} in sequences waiting for cartridges")
                 waiting_seq_ids = state.sequences_waiting_for_cartridges.pop(cartridge_id)
                 state.logger.info(f"{len(waiting_seq_ids)} sequences can now be scheduled after {cartridge_id} download")
                 # These sequences will be picked up in the next scheduling cycle
@@ -231,13 +231,12 @@ def send_cartridge_load_commands(state: ManagerState, decision: ScheduleDecision
 
         for cartridge_id, block_indices in required_cartridges.items():
             if not state.is_cartridge_loaded(cartridge_id):
+                state.logger.info(f"Here {cartridge_id}")
                 # At this point, cartridge should already be downloaded during validation
                 # Just verify it exists and send the LoadCartridge command (use sanitized ID for directory path)
                 sanitized_id = sanitize_cartridge_id(cartridge_id)
                 cartridge_path = Path(state.config.cartridge_dir) / sanitized_id
-                if not (cartridge_path / "cartridge.pt").exists() or not (
-                    cartridge_path / "config.yaml"
-                ).exists():
+                if not (cartridge_path / "cartridge.pt").exists():
                     state.logger.error(f"Cartridge {cartridge_id} not found even after validation - this should not happen")
                     continue
 
@@ -1340,6 +1339,7 @@ def manager_loop(config: ServerConfig, state: ManagerState):
 
         if config.allocator_sanity_checks:
             run_sanity_checks(state)
+        state.logger.info(f"Sanity checks run")
 
 
 @error_propogation_decorator

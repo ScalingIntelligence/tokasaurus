@@ -65,6 +65,7 @@ def basic_model_loop(
 
             match command:
                 case LoadCartridge():
+                    logger.info(f"Loading cartridge: {command.cartridge_id}")
                     # Load cartridge synchronously before continuing
                     cartridge_manager.load_cartridge(
                         cartridge_id=command.cartridge_id,

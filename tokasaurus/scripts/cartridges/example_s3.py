@@ -78,7 +78,7 @@ def main():
     print_response(result, "Baseline (no cartridge)")
     
     # Example 3: HuggingFace cartridge (if available)
-    print("\n📋 Example 2: Request with HuggingFace cartridge")
+    print("\n📋 Example 2: Request with S3 cartridge")
     result = send_request(
         messages=[{"role": "user", "content": "Can you tell me about the patients?"}],
         cartridges=[{

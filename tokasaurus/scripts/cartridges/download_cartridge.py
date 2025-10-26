@@ -252,6 +252,9 @@ def test_download_cartridge_s3(
     if test_dir is None:
         test_dir = Path(tempfile.mkdtemp())
         logger.info(f"Using temporary directory: {test_dir}")
+
+    from tokasaurus.manager.cartridge_downloader import validate_cartridge_exists
+    validate_cartridge_exists(cartridge_id, source="s3")
     
     logger.info(f"Testing S3 cartridge download: {cartridge_id}")
     
@@ -261,7 +264,7 @@ def test_download_cartridge_s3(
             cartridge_id=cartridge_id,
             source="s3",
             cartridges_path=test_dir,
-            force_redownload=False
+            force_redownload=True
         )
         
         # Verify the cartridge was downloaded

@@ -431,13 +431,11 @@ def validate_cartridge_exists(cartridge_id: str, source: str, logger=None):
                 bucket_name = s3_path_parts[0]
                 s3_prefix = s3_path_parts[1] if len(s3_path_parts) > 1 else ""
 
-                # Ensure the S3 path ends with a slash for consistency
-                if not s3_prefix.endswith("/"):
-                    s3_prefix += "/"
-
                 # Construct S3 paths for cartridge and config files
-                s3_cartridge_key = s3_prefix + "cartridge.pt"
-                s3_config_key = s3_prefix + "config.yaml"
+                if s3_prefix.endswith(".pt"):
+                    s3_cartridge_key = s3_prefix
+                else:
+                    raise ValueError(f"S3 cartridge_id must end with '.pt': {cartridge_id}")
 
                 # Get AWS credentials from environment variables
                 aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
@@ -449,14 +447,12 @@ def validate_cartridge_exists(cartridge_id: str, source: str, logger=None):
                 if aws_access_key_id and aws_secret_access_key:
                     session_kwargs["aws_access_key_id"] = aws_access_key_id
                     session_kwargs["aws_secret_access_key"] = aws_secret_access_key
-                if region_name:
-                    session_kwargs["region_name"] = region_name
+
 
                 s3_client = boto3.client("s3", **session_kwargs)
 
                 # Check if both files exist
                 s3_client.head_object(Bucket=bucket_name, Key=s3_cartridge_key)
-                s3_client.head_object(Bucket=bucket_name, Key=s3_config_key)
 
                 logger.debug(f"Cartridge {cartridge_id} exists in S3")
             except Exception as e:
