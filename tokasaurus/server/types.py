@@ -23,7 +23,7 @@ class StreamOptions(BaseModel):
 class Cartridge(BaseModel):
     """Model for specifying a cartridge to use in requests."""
     id: str = Field(description="The cartridge ID to use")
-    source: Literal["wandb", "local", "huggingface"] = Field(default="wandb", description="The source to download from ('wandb', 'local', 'huggingface')")
+    source: Literal["wandb", "local", "huggingface", "s3"] = Field(default="wandb", description="The source to download from ('wandb', 'local', 'huggingface', 's3')")
     force_redownload: bool = Field(default=False, description="Whether to force redownload even if cartridge exists locally")
 
 

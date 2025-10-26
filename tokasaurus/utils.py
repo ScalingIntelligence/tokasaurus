@@ -515,44 +515,189 @@ def error_propogation_decorator(func):
 def sanitize_cartridge_id(cartridge_id: str) -> str:
     """
     Sanitize a cartridge ID to make it safe for use as a directory name.
-    
+
     This function:
     - Replaces forward slashes and backslashes with dashes
     - Replaces other problematic characters (colon, pipe, etc.) with underscores
     - Removes/replaces path traversal sequences
     - Ensures the result is a valid directory name
-    
+
     Args:
         cartridge_id: The original cartridge ID
-        
+
     Returns:
         A sanitized cartridge ID safe for use in directory paths
-        
+
     Raises:
         ValueError: If the cartridge_id is empty or results in an empty string after sanitization
     """
     if not cartridge_id or not cartridge_id.strip():
         raise ValueError("Cartridge ID cannot be empty")
-    
+
     # Replace forward slashes and backslashes with dashes
     sanitized = cartridge_id.replace("/", "-").replace("\\", "-")
-    
+
     # Replace other problematic characters with underscores
     # This includes: colon, pipe, question mark, asterisk, angle brackets, quotes
     sanitized = re.sub(r'[:|*?<>"\'\x00-\x1f\x7f]', "_", sanitized)
-    
+
     # Handle path traversal sequences more aggressively
     # Replace any sequence that starts with dots
     sanitized = re.sub(r'\.+', "_", sanitized)
-    
+
     # Remove any remaining slashes that might have been missed
     sanitized = sanitized.replace("/", "-").replace("\\", "-")
-    
+
     # Trim whitespace and replace multiple consecutive special chars with single underscore
     sanitized = re.sub(r'[_-]{2,}', "_", sanitized.strip())
-    
+
     # Ensure it's not empty after sanitization
     if not sanitized or sanitized in ["_"]:
         sanitized = f"sanitized_{abs(hash(cartridge_id)) % 1000000}"
-    
+
     return sanitized
+
+
+def upload_file_to_s3(
+    local_path,
+    s3_path: str,
+    aws_access_key_id: str | None = None,
+    aws_secret_access_key: str | None = None,
+    region_name: str | None = None,
+) -> str:
+    """Upload a single file to S3.
+
+    Args:
+        local_path: Local path to the file to upload
+        s3_path: S3 path to upload to (e.g., "s3://bucket-name/path/to/file.pt")
+        aws_access_key_id: AWS access key ID (if None, uses AWS_ACCESS_KEY_ID env var or default credentials)
+        aws_secret_access_key: AWS secret access key (if None, uses AWS_SECRET_ACCESS_KEY env var or default credentials)
+        region_name: AWS region name (if None, uses AWS_REGION env var or default region)
+
+    Returns:
+        S3 path of the uploaded file
+    """
+    from pathlib import Path
+
+    try:
+        import boto3
+    except ImportError:
+        raise ImportError("Please install 'boto3' to upload to S3: pip install boto3")
+
+    local_path = Path(local_path)
+
+    # Check if file exists
+    if not local_path.exists():
+        raise ValueError(f"Local file not found: {local_path}")
+
+    # Parse S3 path
+    if not s3_path.startswith("s3://"):
+        raise ValueError(f"S3 path must start with 's3://': {s3_path}")
+
+    s3_path_parts = s3_path[5:].split("/", 1)
+    bucket_name = s3_path_parts[0]
+    s3_key = s3_path_parts[1] if len(s3_path_parts) > 1 else ""
+
+    if not s3_key:
+        raise ValueError(f"S3 path must include a key: {s3_path}")
+
+    # Get AWS credentials from parameters or environment variables
+    if aws_access_key_id is None:
+        aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+    if aws_secret_access_key is None:
+        aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    if region_name is None:
+        region_name = os.getenv("AWS_REGION", "us-east-1")
+
+    # Create S3 client
+    session_kwargs = {}
+    if aws_access_key_id and aws_secret_access_key:
+        session_kwargs["aws_access_key_id"] = aws_access_key_id
+        session_kwargs["aws_secret_access_key"] = aws_secret_access_key
+    if region_name:
+        session_kwargs["region_name"] = region_name
+
+    s3_client = boto3.client("s3", **session_kwargs)
+
+    # Upload file
+    logger.info(f"Uploading {local_path} to s3://{bucket_name}/{s3_key}")
+    s3_client.upload_file(str(local_path), bucket_name, s3_key)
+    logger.info(f"Upload completed successfully!")
+
+    return f"s3://{bucket_name}/{s3_key}"
+
+
+def download_from_s3(
+    s3_path: str,
+    local_path=None,
+    aws_access_key_id: str | None = None,
+    aws_secret_access_key: str | None = None,
+    region_name: str | None = None,
+):
+    """Download a file from S3 to a local path.
+
+    Args:
+        s3_path: S3 path to download from (e.g., "s3://bucket-name/path/to/file.parquet")
+        local_path: Local path to save the file (if None, creates a temp file)
+        aws_access_key_id: AWS access key ID (if None, uses AWS_ACCESS_KEY_ID env var or default credentials)
+        aws_secret_access_key: AWS secret access key (if None, uses AWS_SECRET_ACCESS_KEY env var or default credentials)
+        region_name: AWS region name (if None, uses AWS_REGION env var or default region)
+
+    Returns:
+        Path to the downloaded file
+    """
+    from pathlib import Path
+
+    try:
+        import boto3
+    except ImportError:
+        raise ImportError("Please install 'boto3' to download from S3: pip install boto3")
+
+    # Parse S3 path
+    if not s3_path.startswith("s3://"):
+        raise ValueError(f"S3 path must start with 's3://': {s3_path}")
+
+    s3_path_parts = s3_path[5:].split("/", 1)
+    bucket_name = s3_path_parts[0]
+    s3_key = s3_path_parts[1] if len(s3_path_parts) > 1 else ""
+
+    if not s3_key:
+        raise ValueError(f"S3 path must include a key: {s3_path}")
+
+    # Get AWS credentials from parameters or environment variables
+    if aws_access_key_id is None:
+        aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+    if aws_secret_access_key is None:
+        aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    if region_name is None:
+        region_name = os.getenv("AWS_REGION", "us-east-1")
+
+    # Create S3 client
+    session_kwargs = {}
+    if aws_access_key_id and aws_secret_access_key:
+        session_kwargs["aws_access_key_id"] = aws_access_key_id
+        session_kwargs["aws_secret_access_key"] = aws_secret_access_key
+    if region_name:
+        session_kwargs["region_name"] = region_name
+
+    s3_client = boto3.client("s3", **session_kwargs)
+
+    # Determine local path
+    if local_path is None:
+        import tempfile
+        # Create temp file with same extension as S3 file
+        suffix = Path(s3_key).suffix
+        temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        local_path = Path(temp_file.name)
+        temp_file.close()
+    else:
+        local_path = Path(local_path)
+        # Create parent directories if they don't exist
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Download file
+    logger.info(f"Downloading from s3://{bucket_name}/{s3_key} to {local_path}")
+    s3_client.download_file(bucket_name, s3_key, str(local_path))
+    logger.info(f"Download completed successfully!")
+
+    return local_path

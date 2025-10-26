@@ -264,13 +264,16 @@ def download_cartridge_from_huggingface(cartridge_id: str, cartridges_path: Path
     logger.info(f"Cartridge {cartridge_id} download completed successfully")
 
 
-def download_cartridge(cartridge_id: str, source: str, cartridges_path: Path, force_redownload: bool = False, logger=None):
+def download_cartridge_from_s3(cartridge_id: str, cartridges_path: Path, force_redownload: bool = False, logger=None):
     """
-    Downloads a cartridge from the specified source.
-    
+    Downloads a cartridge from S3.
+    The cartridge_id should be an S3 path prefix (e.g., "s3://bucket-name/path/to/cartridge/").
+    This function expects the cartridge files to be stored as:
+    - s3://bucket-name/path/to/cartridge/cartridge.pt
+    - s3://bucket-name/path/to/cartridge/config.yaml
+
     Args:
-        cartridge_id: The cartridge ID to download
-        source: The source to download from ('wandb', 'local', 'huggingface')
+        cartridge_id: The S3 path prefix to download from (e.g., "s3://bucket-name/path/to/cartridge/")
         cartridges_path: The base path where cartridges are stored
         force_redownload: If True, redownload even if cartridge already exists locally
         logger: Logger instance to use (if None, uses global logger)
@@ -278,7 +281,75 @@ def download_cartridge(cartridge_id: str, source: str, cartridges_path: Path, fo
     if logger is None:
         from loguru import logger as global_logger
         logger = global_logger
-        
+
+    from tokasaurus.utils import download_from_s3
+
+    # Sanitize cartridge_id for safe directory creation
+    sanitized_id = sanitize_cartridge_id(cartridge_id)
+    cartridge_dir = cartridges_path / sanitized_id
+    cartridge_file = cartridge_dir / "cartridge.pt"
+    config_file = cartridge_dir / "config.yaml"
+
+    # Check if cartridge already exists and skip if not force redownload
+    if not force_redownload and cartridge_file.exists() and config_file.exists():
+        logger.info(f"Cartridge {cartridge_id} already exists locally, skipping download")
+        return
+
+    # Ensure cartridge_id is an S3 path
+    if not cartridge_id.startswith("s3://"):
+        raise ValueError(f"S3 cartridge_id must start with 's3://': {cartridge_id}")
+
+    # Ensure the S3 path ends with a slash for consistency
+    s3_prefix = cartridge_id if cartridge_id.endswith("/") else cartridge_id + "/"
+
+    # Construct S3 paths for cartridge and config files
+    s3_cartridge_path = s3_prefix + "cartridge.pt"
+    s3_config_path = s3_prefix + "config.yaml"
+
+    cartridge_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Downloading cartridge from {s3_cartridge_path}...")
+
+    try:
+        # Download cartridge.pt
+        download_from_s3(s3_cartridge_path, cartridge_file)
+        logger.info(f"Successfully downloaded cartridge.pt to {cartridge_file}")
+
+        # Download config.yaml
+        logger.info(f"Downloading config.yaml from {s3_config_path}...")
+        download_from_s3(s3_config_path, config_file)
+        logger.info(f"Successfully downloaded config.yaml to {config_file}")
+
+    except Exception as e:
+        logger.error(f"Failed to download cartridge from S3: {e}")
+        raise FileNotFoundError(f"Could not download cartridge from S3 path {cartridge_id}") from e
+
+    # Clean the config.yaml file to remove Python-specific YAML tags
+    _clean_yaml_config(config_file, logger)
+
+    size = os.path.getsize(cartridge_file)
+    logger.info(f"File size: {size / (1024*1024):.2f} MB")
+
+    _verify_cartridge_data(cartridge_file, logger)
+
+    logger.info(f"Cartridge {cartridge_id} download completed successfully")
+
+
+def download_cartridge(cartridge_id: str, source: str, cartridges_path: Path, force_redownload: bool = False, logger=None):
+    """
+    Downloads a cartridge from the specified source.
+
+    Args:
+        cartridge_id: The cartridge ID to download
+        source: The source to download from ('wandb', 'local', 'huggingface', 's3')
+        cartridges_path: The base path where cartridges are stored
+        force_redownload: If True, redownload even if cartridge already exists locally
+        logger: Logger instance to use (if None, uses global logger)
+    """
+    if logger is None:
+        from loguru import logger as global_logger
+        logger = global_logger
+
     match source:
         case "wandb":
             download_cartridge_from_wandb(cartridge_id, cartridges_path, force_redownload, logger)
@@ -289,13 +360,15 @@ def download_cartridge(cartridge_id: str, source: str, cartridges_path: Path, fo
             cartridge_dir = cartridges_path / sanitized_id
             cartridge_file = cartridge_dir / "cartridge.pt"
             config_file = cartridge_dir / "config.yaml"
-            
+
             if not cartridge_file.exists() or not config_file.exists():
                 raise FileNotFoundError(f"Local cartridge '{cartridge_id}' not found at {cartridge_dir}. Expected files: cartridge.pt, config.yaml")
-            
+
             logger.info(f"Local cartridge '{cartridge_id}' found at {cartridge_dir}")
         case "huggingface":
             download_cartridge_from_huggingface(cartridge_id, cartridges_path, force_redownload, logger)
+        case "s3":
+            download_cartridge_from_s3(cartridge_id, cartridges_path, force_redownload, logger)
         case _:
             raise ValueError(f"Unsupported cartridge source: {source}") 
 
@@ -304,16 +377,16 @@ def validate_cartridge_exists(cartridge_id: str, source: str, logger=None):
     """
     Quick validation to check if a cartridge exists without downloading it.
     Raises appropriate exceptions if the cartridge cannot be found.
-    
+
     Args:
         cartridge_id: The cartridge ID to validate
-        source: The source to validate against ('wandb', 'local', 'huggingface')
+        source: The source to validate against ('wandb', 'local', 'huggingface', 's3')
         logger: Logger instance to use (if None, uses global logger)
     """
     if logger is None:
         from loguru import logger as global_logger
         logger = global_logger
-        
+
     match source:
         case "wandb":
             # Quick check if wandb run exists
@@ -327,7 +400,7 @@ def validate_cartridge_exists(cartridge_id: str, source: str, logger=None):
             except wandb.errors.CommError as e:
                 logger.error(f"Could not find wandb run for cartridge_id: hazy-research/{WANDB_PROJECT_ID}/{cartridge_id}. Error: {e}")
                 raise FileNotFoundError(f"Could not find wandb run for cartridge_id: hazy-research/{WANDB_PROJECT_ID}/{cartridge_id}") from e
-                
+
         case "huggingface":
             # Quick check if HuggingFace repository exists
             try:
@@ -342,12 +415,61 @@ def validate_cartridge_exists(cartridge_id: str, source: str, logger=None):
             except Exception as e:
                 logger.error(f"Could not access HuggingFace repository {cartridge_id}. Error: {e}")
                 raise FileNotFoundError(f"Could not access HuggingFace repository {cartridge_id}") from e
-                
+
+        case "s3":
+            # Quick check if S3 objects exist
+            try:
+                import boto3
+            except ImportError:
+                raise ImportError("Please install 'boto3' to use S3: pip install boto3")
+
+            try:
+                # Ensure cartridge_id is an S3 path
+                if not cartridge_id.startswith("s3://"):
+                    raise ValueError(f"S3 cartridge_id must start with 's3://': {cartridge_id}")
+
+                # Parse S3 path
+                s3_path_parts = cartridge_id[5:].split("/", 1)
+                bucket_name = s3_path_parts[0]
+                s3_prefix = s3_path_parts[1] if len(s3_path_parts) > 1 else ""
+
+                # Ensure the S3 path ends with a slash for consistency
+                if not s3_prefix.endswith("/"):
+                    s3_prefix += "/"
+
+                # Construct S3 paths for cartridge and config files
+                s3_cartridge_key = s3_prefix + "cartridge.pt"
+                s3_config_key = s3_prefix + "config.yaml"
+
+                # Get AWS credentials from environment variables
+                aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+                aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+                region_name = os.getenv("AWS_REGION", "us-east-1")
+
+                # Create S3 client
+                session_kwargs = {}
+                if aws_access_key_id and aws_secret_access_key:
+                    session_kwargs["aws_access_key_id"] = aws_access_key_id
+                    session_kwargs["aws_secret_access_key"] = aws_secret_access_key
+                if region_name:
+                    session_kwargs["region_name"] = region_name
+
+                s3_client = boto3.client("s3", **session_kwargs)
+
+                # Check if both files exist
+                s3_client.head_object(Bucket=bucket_name, Key=s3_cartridge_key)
+                s3_client.head_object(Bucket=bucket_name, Key=s3_config_key)
+
+                logger.debug(f"Cartridge {cartridge_id} exists in S3")
+            except Exception as e:
+                logger.error(f"Could not access S3 path {cartridge_id}. Error: {e}")
+                raise FileNotFoundError(f"Could not access S3 path {cartridge_id}") from e
+
         case "local":
             # For local source, just verify the cartridge exists
             sanitized_id = sanitize_cartridge_id(cartridge_id)
             # This will raise appropriate errors if paths don't exist
             logger.debug(f"Local cartridge validation for {cartridge_id} not implemented in validate_cartridge_exists")
-            
+
         case _:
             raise ValueError(f"Unsupported cartridge source: {source}") 
