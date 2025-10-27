@@ -377,7 +377,7 @@ if __name__ == "__main__":
     logger.info("TEST 4: S3 Download and Validation")
     logger.info("="*50)
     if not test_download_cartridge_s3(
-        "s3://engram-cartridges/weights/cartridge-llama-40455a296d32046e/cache-step27.pt",
+        "s3://engram-cartridges/weights/cartridges-tutorial-train/2zqgalxr/cache-step4.pt",
         test_dir
     ):
         all_tests_passed = False

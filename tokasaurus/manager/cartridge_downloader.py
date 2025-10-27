@@ -303,6 +303,10 @@ def download_cartridge_from_s3(
     # Ensure the S3 path ends with a slash for consistency
     if cartridge_id.endswith(".pt"):
         s3_cartridge_path = cartridge_id
+        # Extract the directory path and create config path
+        s3_dir = "/".join(cartridge_id.split("/")[:-1]) + "/"
+        s3_config_path = s3_dir + "config.yaml"
+        config_file = cartridge_dir / "config.yaml"
     else:
         s3_prefix = cartridge_id if cartridge_id.endswith("/") else cartridge_id + "/"
         # TODO: SE
@@ -315,6 +319,7 @@ def download_cartridge_from_s3(
     try:
         # Download cartridge.pt
         download_from_s3(s3_cartridge_path, cartridge_file)
+        download_from_s3(s3_config_path, config_file)
         logger.info(f"Successfully downloaded cartridge.pt to {cartridge_file}")
 
         # # Download config.yaml
