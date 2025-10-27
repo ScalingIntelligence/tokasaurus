@@ -261,13 +261,18 @@ def download_cartridge_from_huggingface(cartridge_id: str, cartridges_path: Path
     logger.info(f"Cartridge {cartridge_id} download completed successfully")
 
 
-def download_cartridge_from_s3(cartridge_id: str, cartridges_path: Path, force_redownload: bool = False, logger=None):
+def download_cartridge_from_s3(
+    cartridge_id: str, 
+    cartridges_path: Path, 
+    force_redownload: bool = False, 
+    logger=None
+):
     """
     Downloads a cartridge from S3.
     The cartridge_id should be an S3 path prefix (e.g., "s3://bucket-name/path/to/cartridge/").
     This function expects the cartridge files to be stored as:
-    - s3://bucket-name/path/to/cartridge/cartridge.pt
-    - s3://bucket-name/path/to/cartridge/config.yaml
+    - s3://bucket-name/path/to/cartridge/*.pt
+    - s3://bucket-name/path/to/cartridge/*_config.yaml
 
     Args:
         cartridge_id: The S3 path prefix to download from (e.g., "s3://bucket-name/path/to/cartridge/")
@@ -309,7 +314,6 @@ def download_cartridge_from_s3(cartridge_id: str, cartridges_path: Path, force_r
 
     try:
         # Download cartridge.pt
-        logger.error(f"Downloading from {s3_cartridge_path} to {cartridge_file}")
         download_from_s3(s3_cartridge_path, cartridge_file)
         logger.info(f"Successfully downloaded cartridge.pt to {cartridge_file}")
 
