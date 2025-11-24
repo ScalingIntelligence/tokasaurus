@@ -331,8 +331,8 @@ def download_cartridge_from_s3(
         logger.error(f"Failed to download cartridge from S3: {e}")
         raise FileNotFoundError(f"Could not download cartridge from S3 path {cartridge_id}") from e
 
-    # # Clean the config.yaml file to remove Python-specific YAML tags
-    # _clean_yaml_config(config_file, logger)
+    # Clean the config.yaml file to remove Python-specific YAML tags
+    _clean_yaml_config(config_file, logger)
 
     size = os.path.getsize(cartridge_file)
     logger.info(f"File size: {size / (1024*1024):.2f} MB")
