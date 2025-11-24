@@ -62,6 +62,7 @@ def print_response(result: Dict[str, Any], test_name: str):
     else:
         print(f"❌ Error: {result['error']}")
 
+
 def main():
     """Run cartridge usage examples."""
     
@@ -82,7 +83,7 @@ def main():
     result = send_request(
         messages=[{"role": "user", "content": "Can you tell me about the patients?"}],
         cartridges=[{
-            "id": "s3://engram-cartridges/weights/cartridges-tutorial-train/2zqgalxr/cache-step4.pt",
+            "id": "s3://engram-cartridges/weights/torchtitan/run-2025-11-23-a5193062/step-6/model.pt",
             "source": "s3",
             "force_redownload": False
         }]

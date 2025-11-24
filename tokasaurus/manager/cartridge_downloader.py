@@ -54,10 +54,12 @@ def _clean_yaml_config(config_file: Path, logger):
         config_file: Path to the config.yaml file to clean
         logger: Logger instance to use
     """
+    logger.info(f"Cleaning YAML config file {config_file}")
     try:
         # First, try to load with safe_load to see if it's already clean
         with open(config_file, 'r') as f:
             yaml.safe_load(f)
+        logger.info(f"Config file {config_file} is already clean YAML")
         logger.info(f"Config file {config_file} is already clean YAML")
         return
     except yaml.constructor.ConstructorError:
@@ -69,12 +71,13 @@ def _clean_yaml_config(config_file: Path, logger):
             try:
                 config_data = yaml.load(f, Loader=yaml.FullLoader)
             except Exception as e:
-                logger.warning(f"Could not clean YAML file {config_file} with FullLoader, trying UnsafeLoader: {e}")
+                logger.warning(f"Could not clean YAML file {config_file} with FullLoader, trying BaseLoader: {e}")
                 f.seek(0)
-                config_data = yaml.load(f, Loader=yaml.UnsafeLoader)
+                config_data = yaml.load(f, Loader=yaml.BaseLoader)
         
         # Save back as clean YAML
         with open(config_file, 'w') as f:
+            logger.info(f"Saving back as clean YAML {config_data}")
             yaml.safe_dump(config_data, f, default_flow_style=False, sort_keys=False)
         
         logger.info(f"Successfully cleaned config file {config_file}")

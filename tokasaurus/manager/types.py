@@ -33,7 +33,7 @@ class CartridgeConfig:
     def from_config_yaml(cls, cartridge_id: str, config_path: Path) -> "CartridgeConfig":
         """Create CartridgeConfig from wandb config.yaml file."""
         with open(config_path, "r") as f:
-            config_data = yaml.safe_load(f)
+            config_data = yaml.load(f, Loader=yaml.BaseLoader)
         
         # Extract max_tokens from kv_cache_initializer section
         kv_cache_init = config_data.get("kv_cache_initializer", {})
@@ -42,7 +42,11 @@ class CartridgeConfig:
             # try value field (wandb config format)
             max_tokens = kv_cache_init.get("value", {}).get("max_tokens")
         if max_tokens is None:
+            max_tokens = config_data.get("model", {}).get("adapter", {}).get("prefix_len")
+        if max_tokens is None:
             raise ValueError(f"max_tokens not found in {config_path}")
+        
+        max_tokens = int(max_tokens)
         
         # Extract model information
         model_config = config_data.get("model", {})

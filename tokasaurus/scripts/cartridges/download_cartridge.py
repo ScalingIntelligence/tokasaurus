@@ -310,6 +310,10 @@ def test_download_cartridge_s3(
         else:
             logger.warning("⚠️ Force redownload may not have updated the file timestamp")
 
+        from tokasaurus.manager.types import CartridgeConfig
+        config_file = cartridge_dir / "config.yaml"
+        out = CartridgeConfig.from_config_yaml(cartridge_id, config_file)
+        logger.info(f"Cartridge config: {out}")
         return True
         
     except Exception as e:
@@ -377,7 +381,7 @@ if __name__ == "__main__":
     logger.info("TEST 4: S3 Download and Validation")
     logger.info("="*50)
     if not test_download_cartridge_s3(
-        "s3://engram-cartridges/weights/cartridges-tutorial-train/2zqgalxr/cache-step4.pt",
+        "s3://engram-cartridges/weights/torchtitan/run-2025-11-23-a5193062/step-6/model.pt",
         test_dir
     ):
         all_tests_passed = False
