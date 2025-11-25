@@ -406,6 +406,32 @@ class LoadCartridge:
     cartridge_dir: str
 
 
+def _convert_from_torchtitan(state_dict: dict) -> dict:
+    """Convert a state dict from torchtitan to the format expected by the CartridgeManager."""
+    trainable_keys, trainable_values = [], [] 
+    fixed_keys, fixed_values = [], []
+    for name, tensor in state_dict.items():
+        if name.startswith("layers."):
+            name_parts = name.split(".")
+            layer_idx = int(name_parts[1])
+            if name_parts[-1] == "keys":
+                trainable_keys.append(tensor[:, 1:].transpose(1, 2))
+                fixed_keys.append(tensor[:, :1].transpose(1, 2))
+
+            elif name_parts[-1] == "values":
+                trainable_values.append(tensor[:, 1:].transpose(1, 2))
+                fixed_values.append(tensor[:, :1].transpose(1, 2))
+
+    assert len(trainable_keys) == len(trainable_values), "Number of trainable keys and values must match"
+    assert len(fixed_keys) == len(fixed_values), "Number of fixed keys and values must match"
+    return {
+        "trainable_keys": trainable_keys,
+        "trainable_values": trainable_values,
+        "fixed_keys": fixed_keys,
+        "fixed_values": fixed_values,
+    }
+
+
 class CartridgeManager:
     def __init__(self, model, page_size: int, logger: logging.Logger | None = None):
         self.model = model
@@ -431,6 +457,10 @@ class CartridgeManager:
             state_dict["fixed_values"] = state_dict["frozen_values"]
             del state_dict["frozen_keys"]
             del state_dict["frozen_values"]
+        
+        if "trainable_keys" not in state_dict:
+            # This means the cartridge is from torchtitan
+            state_dict = _convert_from_torchtitan(state_dict)
         
         num_fixed = state_dict["fixed_keys"][0].shape[2]
         num_trainable = state_dict["trainable_keys"][0].shape[2]

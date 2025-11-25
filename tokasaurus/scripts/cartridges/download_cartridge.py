@@ -313,6 +313,12 @@ def test_download_cartridge_s3(
         from tokasaurus.manager.types import CartridgeConfig
         config_file = cartridge_dir / "config.yaml"
         out = CartridgeConfig.from_config_yaml(cartridge_id, config_file)
+
+        import torch
+        state_dict = torch.load(cartridge_file, map_location="cpu", weights_only=False)
+        from tokasaurus.model.types import _convert_from_torchtitan
+        state_dict = _convert_from_torchtitan(state_dict)
+        breakpoint()
         logger.info(f"Cartridge config: {out}")
         return True
         
